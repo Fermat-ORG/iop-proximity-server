@@ -1,0 +1,51 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.26228.4
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{C25BF2C5-BB99-42F2-9668-B5ED3524C1A4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProximityServer", "src\ProximityServer\ProximityServer.csproj", "{306AD653-BE02-422B-AEF8-32FE49AB5A49}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "IopCommon", "..\IoP-Server-Library\src\IopCommon\IopCommon.csproj", "{CE19805A-7222-437C-A647-AAE0477BD7F5}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "IopCrypto", "..\IoP-Server-Library\src\IopCrypto\IopCrypto.csproj", "{C9355FB9-C6E3-4B10-935A-D6BD85B92284}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "IopProtocol", "..\IoP-Server-Library\src\IopProtocol\IopProtocol.csproj", "{0299A3E7-A276-4CC8-A6E8-5EF66585AB53}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "IopServerCore", "..\IoP-Server-Library\src\IopServerCore\IopServerCore.csproj", "{3D026BC0-75CF-4E7E-8FCC-EDECD8489713}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{CE19805A-7222-437C-A647-AAE0477BD7F5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CE19805A-7222-437C-A647-AAE0477BD7F5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CE19805A-7222-437C-A647-AAE0477BD7F5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CE19805A-7222-437C-A647-AAE0477BD7F5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{306AD653-BE02-422B-AEF8-32FE49AB5A49}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{306AD653-BE02-422B-AEF8-32FE49AB5A49}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{306AD653-BE02-422B-AEF8-32FE49AB5A49}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{306AD653-BE02-422B-AEF8-32FE49AB5A49}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C9355FB9-C6E3-4B10-935A-D6BD85B92284}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C9355FB9-C6E3-4B10-935A-D6BD85B92284}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C9355FB9-C6E3-4B10-935A-D6BD85B92284}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C9355FB9-C6E3-4B10-935A-D6BD85B92284}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0299A3E7-A276-4CC8-A6E8-5EF66585AB53}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0299A3E7-A276-4CC8-A6E8-5EF66585AB53}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0299A3E7-A276-4CC8-A6E8-5EF66585AB53}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0299A3E7-A276-4CC8-A6E8-5EF66585AB53}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3D026BC0-75CF-4E7E-8FCC-EDECD8489713}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3D026BC0-75CF-4E7E-8FCC-EDECD8489713}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3D026BC0-75CF-4E7E-8FCC-EDECD8489713}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3D026BC0-75CF-4E7E-8FCC-EDECD8489713}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{306AD653-BE02-422B-AEF8-32FE49AB5A49} = {C25BF2C5-BB99-42F2-9668-B5ED3524C1A4}
+	EndGlobalSection
+EndGlobal
