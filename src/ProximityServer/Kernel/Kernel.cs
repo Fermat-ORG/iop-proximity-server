@@ -31,10 +31,10 @@ namespace ProximityServer.Kernel
       {
         new Config(),
         new Cron(),
+        new Data.Database(),
         new Network.Server(),
-        new Network.LOC.LocationBasedNetwork(),
-        new Network.CAN.CanApi(),
-        new Network.CAN.ContentAddressNetwork(),
+        new Network.LocationBasedNetwork(),
+        new Network.ContentAddressNetwork(),
         new Network.NeighborhoodActionProcessor(),
       };
 

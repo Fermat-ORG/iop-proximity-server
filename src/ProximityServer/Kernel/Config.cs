@@ -66,6 +66,12 @@ namespace ProximityServer.Kernel
     /// <summary>End point of the Content Address Network server.</summary>
     public IPEndPoint CanEndPoint;
 
+    /// <summary>Time in seconds between the last contact from a neighbor server up to the point when the proximity server considers the neighbor as dead.</summary>
+    public int NeighborExpirationTimeSeconds;
+
+    /// <summary>Time in seconds between the last refresh request sent by the proximity server to its Follower server.</summary>
+    public int FollowerRefreshTimeSeconds;
+
     /// <summary>Test mode allows the server to violate protocol as some of the limitations are not enforced.</summary>
     public bool TestModeEnabled;
 
@@ -155,6 +161,8 @@ namespace ProximityServer.Kernel
         int canPort = 0;
         IPEndPoint locEndPoint = null;
         IPEndPoint canEndPoint = null;
+        int neighborExpirationTimeSeconds = 0;
+        int followerRefreshTimeSeconds = 0;
         int maxNeighborhoodSize = 0;
         int maxFollowerServersCount = 0;
 
@@ -176,6 +184,8 @@ namespace ProximityServer.Kernel
           { "can_api_port",                            ConfigValueType.Port           },
           { "max_neighborhood_size",                   ConfigValueType.Int            },
           { "max_follower_servers_count",              ConfigValueType.Int            },
+          { "neighbor_expiration_time",                ConfigValueType.Int            },
+          { "follower_refresh_time",                   ConfigValueType.Int            },
         };
 
         error = !LinesToNameValueDictionary(Lines, namesDefinition, nameVal);
@@ -198,6 +208,8 @@ namespace ProximityServer.Kernel
           maxNeighborhoodSize = (int)nameVal["max_neighborhood_size"];
           maxFollowerServersCount = (int)nameVal["max_follower_servers_count"];
 
+          neighborExpirationTimeSeconds = (int)nameVal["neighbor_expiration_time"];
+          followerRefreshTimeSeconds = (int)nameVal["follower_refresh_time"];
 
           serverRoles = new ConfigServerRoles();
           error = !(serverRoles.AddRoleServer(primaryInterfacePort, (uint)ServerRole.Primary, false, Server.ServerKeepAliveIntervalMs)
@@ -243,9 +255,9 @@ namespace ProximityServer.Kernel
 
         if (!error)
         {
-          if ((maxActivities <= 0) || (maxActivities > ActivityBase.MaxActivities))
+          if ((maxActivities <= 0) || (maxActivities > ActivityBase.MaxPrimaryActivities))
           {
-            log.Error("max_activities must be an integer between 1 and {0}.", ActivityBase.MaxActivities);
+            log.Error("max_activities must be an integer between 1 and {0}.", ActivityBase.MaxPrimaryActivities);
             error = true;
           }
         }
@@ -299,6 +311,25 @@ namespace ProximityServer.Kernel
 
         if (!error)
         {
+          if (!testModeEnabled && (neighborExpirationTimeSeconds < Neighbor.MinNeighborhoodExpirationTimeSeconds))
+          {
+            log.Error("neighbor_expiration_time must be an integer number greater or equal to {0}.", Neighbor.MinNeighborhoodExpirationTimeSeconds);
+            error = true;
+          }
+        }
+
+        if (!error)
+        {
+          bool followerRefreshTimeSecondsValid = (0 < followerRefreshTimeSeconds) && (followerRefreshTimeSeconds < Neighbor.MinNeighborhoodExpirationTimeSeconds);
+          if (!testModeEnabled && !followerRefreshTimeSecondsValid)
+          {
+            log.Error("follower_refresh_time must be an integer number between 1 and {0}.", Neighbor.MinNeighborhoodExpirationTimeSeconds - 1);
+            error = true;
+          }
+        }
+
+        if (!error)
+        {
           if (!testModeEnabled && (maxNeighborhoodSize < Neighbor.MinMaxNeighborhoodSize))
           {
             log.Error("max_neighborhood_size must be an integer number greater or equal to {0}.", Neighbor.MinMaxNeighborhoodSize);
@@ -344,6 +375,12 @@ namespace ProximityServer.Kernel
 
           CanEndPoint = canEndPoint;
           Settings["CanEndPoint"] = CanEndPoint;
+
+          NeighborExpirationTimeSeconds = neighborExpirationTimeSeconds;
+          Settings["NeighborExpirationTimeSeconds"] = NeighborExpirationTimeSeconds;
+
+          FollowerRefreshTimeSeconds = followerRefreshTimeSeconds;
+          Settings["FollowerRefreshTimeSeconds"] = FollowerRefreshTimeSeconds;
 
           MaxNeighborhoodSize = maxNeighborhoodSize;
           Settings["MaxNeighborhoodSize"] = MaxNeighborhoodSize;
@@ -519,6 +556,11 @@ namespace ProximityServer.Kernel
 
       if (res)
       {
+        Settings["Keys"] = Keys;
+        Settings["CanIpnsLastSequenceNumber"] = CanIpnsLastSequenceNumber;
+        Settings["CanProximityServerContactInformationHash"] = CanProximityServerContactInformationHash;
+        Settings["CanProximityServerContactInformationChanged"] = CanProximityServerContactInformationChanged;
+
         log.Debug("Server public key hex is '{0}'.", Keys.PublicKeyHex);
         log.Debug("Server network ID is '{0}'.", Crypto.Sha256(Keys.PublicKey).ToHex());
         log.Debug("Server network ID in CAN encoding is '{0}'.", CanApi.PublicKeyToId(Keys.PublicKey).ToBase58());

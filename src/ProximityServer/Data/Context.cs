@@ -20,6 +20,8 @@ namespace ProximityServer.Data
     /// <summary>Access to profile server's settings in the database.</summary>
     public DbSet<Setting> Settings { get; set; }
 
+    /// <summary>Planned actions related to the neighborhood.</summary>
+    public DbSet<NeighborhoodAction> NeighborhoodActions { get; set; }
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
@@ -35,6 +37,58 @@ namespace ProximityServer.Data
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
       base.OnModelCreating(modelBuilder);
+
+
+      modelBuilder.Entity<PrimaryActivity>().HasKey(i => new { i.DbId });
+      modelBuilder.Entity<PrimaryActivity>().HasIndex(i => new { i.ActivityId, i.OwnerIdentityId }).IsUnique();
+      modelBuilder.Entity<PrimaryActivity>().HasIndex(i => new { i.OwnerIdentityId });
+      modelBuilder.Entity<PrimaryActivity>().HasIndex(i => new { i.Type });
+      modelBuilder.Entity<PrimaryActivity>().HasIndex(i => new { i.LocationLatitude, i.LocationLongitude, i.PrecisionRadius });
+      modelBuilder.Entity<PrimaryActivity>().HasIndex(i => new { i.ExtraData });
+      modelBuilder.Entity<PrimaryActivity>().HasIndex(i => new { i.StartTime });
+      modelBuilder.Entity<PrimaryActivity>().HasIndex(i => new { i.ExpirationTime });
+      modelBuilder.Entity<PrimaryActivity>().HasIndex(i => new { i.ExpirationTime, i.StartTime, i.LocationLatitude, i.LocationLongitude, i.PrecisionRadius, i.Type, i.OwnerIdentityId });
+
+      modelBuilder.Entity<PrimaryActivity>().Property(i => i.LocationLatitude).HasColumnType("decimal(9,6)").IsRequired(true);
+      modelBuilder.Entity<PrimaryActivity>().Property(i => i.LocationLongitude).HasColumnType("decimal(9,6)").IsRequired(true);
+
+      modelBuilder.Entity<NeighborActivity>().HasKey(i => new { i.DbId });
+      modelBuilder.Entity<NeighborActivity>().HasIndex(i => new { i.ActivityId, i.OwnerIdentityId }).IsUnique();
+      modelBuilder.Entity<NeighborActivity>().HasIndex(i => new { i.OwnerIdentityId });
+      modelBuilder.Entity<NeighborActivity>().HasIndex(i => new { i.Type });
+      modelBuilder.Entity<NeighborActivity>().HasIndex(i => new { i.LocationLatitude, i.LocationLongitude, i.PrecisionRadius });
+      modelBuilder.Entity<NeighborActivity>().HasIndex(i => new { i.ExtraData });
+      modelBuilder.Entity<NeighborActivity>().HasIndex(i => new { i.StartTime });
+      modelBuilder.Entity<NeighborActivity>().HasIndex(i => new { i.ExpirationTime });
+      modelBuilder.Entity<NeighborActivity>().HasIndex(i => new { i.ExpirationTime, i.StartTime, i.LocationLatitude, i.LocationLongitude, i.PrecisionRadius, i.Type, i.OwnerIdentityId });
+
+      modelBuilder.Entity<NeighborActivity>().Property(i => i.LocationLatitude).HasColumnType("decimal(9,6)").IsRequired(true);
+      modelBuilder.Entity<NeighborActivity>().Property(i => i.LocationLongitude).HasColumnType("decimal(9,6)").IsRequired(true);
+
+
+      modelBuilder.Entity<Neighbor>().HasKey(i => i.DbId);
+      modelBuilder.Entity<Neighbor>().HasIndex(i => new { i.NeighborId }).IsUnique();
+      modelBuilder.Entity<Neighbor>().HasIndex(i => new { i.IpAddress, i.PrimaryPort });
+      modelBuilder.Entity<Neighbor>().HasIndex(i => new { i.LastRefreshTime });
+
+      modelBuilder.Entity<Neighbor>().Property(i => i.LocationLatitude).HasColumnType("decimal(9,6)").IsRequired(true);
+      modelBuilder.Entity<Neighbor>().Property(i => i.LocationLongitude).HasColumnType("decimal(9,6)").IsRequired(true);
+
+      modelBuilder.Entity<Follower>().HasKey(i => i.DbId);
+      modelBuilder.Entity<Follower>().HasIndex(i => new { i.FollowerId }).IsUnique();
+      modelBuilder.Entity<Follower>().HasIndex(i => new { i.IpAddress, i.PrimaryPort });
+      modelBuilder.Entity<Follower>().HasIndex(i => new { i.LastRefreshTime });
+
+
+      modelBuilder.Entity<NeighborhoodAction>().HasKey(i => i.Id);
+      modelBuilder.Entity<NeighborhoodAction>().HasIndex(i => new { i.Id }).IsUnique();
+      modelBuilder.Entity<NeighborhoodAction>().HasIndex(i => new { i.ServerId });
+      modelBuilder.Entity<NeighborhoodAction>().HasIndex(i => new { i.Timestamp });
+      modelBuilder.Entity<NeighborhoodAction>().HasIndex(i => new { i.ExecuteAfter });
+      modelBuilder.Entity<NeighborhoodAction>().HasIndex(i => new { i.Type });
+      modelBuilder.Entity<NeighborhoodAction>().HasIndex(i => new { i.TargetActivityId, i.TargetActivityOwnerId });
+      modelBuilder.Entity<NeighborhoodAction>().HasIndex(i => new { i.ServerId, i.Type, i.TargetActivityId, i.TargetActivityOwnerId });
+      modelBuilder.Entity<NeighborhoodAction>().Property(e => e.TargetActivityOwnerId).IsRequired(false);
     }
   }
 }

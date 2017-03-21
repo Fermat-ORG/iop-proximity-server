@@ -256,7 +256,7 @@ namespace ProximityServer.Network
 
       log.Trace("(-)");
     }*/
-    /*
+    
 
     /// <summary>
     /// Deletes a follower entry from the database when the follower disconnected before the neighborhood initialization process completed.
@@ -327,7 +327,7 @@ namespace ProximityServer.Network
 
       log.Trace("(-):{0}", res);
       return res;
-    }*/
+    }
 
 
 

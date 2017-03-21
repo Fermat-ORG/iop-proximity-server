@@ -1284,7 +1284,7 @@ namespace ProximityServer.Network
       return res;
     }
 
-
+    /*
     /// <summary>
     /// Validates incoming SharedProfileAddItem update item.
     /// </summary>
@@ -1300,7 +1300,7 @@ namespace ProximityServer.Network
       log.Trace("(Index:{0})", Index);
 
       bool res = false;
-      ErrorResponse = null;/*
+      ErrorResponse = null;
 
       string details = null;
       if (IdentityDatabase.Count >= IdentityBase.MaxHostedIdentities)
@@ -1412,12 +1412,12 @@ namespace ProximityServer.Network
         res = true;
       }
       else ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, Index.ToString() + "." + details);
-      */
-      log.Trace("(-):{0}", res);
+      
+    log.Trace("(-):{0}", res);
       return res;
     }
 
-
+      */
     /// <summary>
     /// Processes FinishNeighborhoodInitializationRequest message from client sent during neighborhood initialization process.
     /// <para>Saves the temporary in-memory database of activities to the database and moves the relevant images from the temporary directory to the images directory.</para>

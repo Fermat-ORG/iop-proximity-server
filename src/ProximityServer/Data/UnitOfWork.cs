@@ -2,6 +2,7 @@
 using IopCommon;
 using IopServerCore.Data;
 using ProximityServer.Data.Repositories;
+using ProximityServer.Data.Models;
 
 namespace ProximityServer.Data
 {
@@ -42,5 +43,78 @@ namespace ProximityServer.Data
         return settingsRepository;
       }
     }
+
+    /// <summary>Activity repository for the proximity server's primary activities.</summary>
+    private PrimaryActivityRepository primaryActivityRepository;
+    /// <summary>Activity repository for the proximity server's primary activities.</summary>
+    public PrimaryActivityRepository PrimaryActivityRepository
+    {
+      get
+      {
+        if (primaryActivityRepository == null)
+          primaryActivityRepository = new PrimaryActivityRepository(Context);
+
+        return primaryActivityRepository;
+      }
+    }
+
+    /// <summary>Activity repository for activities managed by the proximity server's neighbors.</summary>
+    private NeighborActivityRepository neighborActivityRepository;
+    /// <summary>Activity repository for activities managed by the proximity server's neighbors.</summary>
+    public NeighborActivityRepository NeighborActivityRepository
+    {
+      get
+      {
+        if (neighborActivityRepository == null)
+          neighborActivityRepository = new NeighborActivityRepository(Context);
+
+        return neighborActivityRepository;
+      }
+    }
+
+
+    /// <summary>Repository of profile server neighbors.</summary>
+    private NeighborRepository neighborRepository;
+    /// <summary>Repository of profile server neighbors.</summary>
+    public NeighborRepository NeighborRepository
+    {
+      get
+      {
+        if (neighborRepository == null)
+          neighborRepository = new NeighborRepository(Context);
+
+        return neighborRepository;
+      }
+    }
+
+
+    /// <summary>Repository of planned actions in the neighborhood.</summary>
+    private NeighborhoodActionRepository neighborhoodActionRepository;
+    /// <summary>Repository of planned actions in the neighborhood.</summary>
+    public NeighborhoodActionRepository NeighborhoodActionRepository
+    {
+      get
+      {
+        if (neighborhoodActionRepository == null)
+          neighborhoodActionRepository = new NeighborhoodActionRepository(Context);
+
+        return neighborhoodActionRepository;
+      }
+    }
+
+    /// <summary>Repository of profile server followers.</summary>
+    private FollowerRepository followerRepository;
+    /// <summary>Repository of profile server followers.</summary>
+    public FollowerRepository FollowerRepository
+    {
+      get
+      {
+        if (followerRepository == null)
+          followerRepository = new FollowerRepository(Context);
+
+        return followerRepository;
+      }
+    }
+
   }
 }

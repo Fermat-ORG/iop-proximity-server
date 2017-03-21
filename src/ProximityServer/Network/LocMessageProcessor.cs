@@ -314,7 +314,7 @@ namespace ProximityServer.Network
       res.NeighborhoodSize = NeighborhoodSize;
       /*
       // Data validation.
-      bool serverIdValid = ServerId.Length == IdentityBase.IdentifierLength;
+      bool serverIdValid = ServerId.Length == ProtocolHelper.NetworkIdentifierLength;
       if (!serverIdValid)
       {
         log.Error("Received invalid neighbor server ID '{0}' from LOC server.", ServerId.ToHex());
@@ -500,7 +500,7 @@ namespace ProximityServer.Network
                   {
                     byte[] serverId = change.RemovedNodeId.ToByteArray();
 
-                    bool serverIdValid = serverId.Length == IdentityBase.IdentifierLength;
+                    bool serverIdValid = serverId.Length == ProtocolHelper.NetworkIdentifierLength;
                     if (!serverIdValid)
                     {
                       log.Error("Received invalid neighbor server ID '{0}' from LOC server.", serverId.ToHex());
@@ -618,15 +618,15 @@ namespace ProximityServer.Network
     {
       log.Trace("()");
 
-      bool res = false;/*
+      bool res = false;
       ProximityServerPort = 0;
-      ProximityServerId = null;
+      ProximityServerId = null;/*
       foreach (ServiceInfo si in NodeInfo.Services)
       {
         if (si.Type == ServiceType.Proximity)
         {
           bool portValid = (0 < si.Port) && (si.Port <= 65535);
-          bool serviceDataValid = si.ServiceData.Length == IdentityBase.IdentifierLength;
+          bool serviceDataValid = si.ServiceData.Length == ProtocolHelper.NetworkIdentifierLength;
           if (portValid && serviceDataValid)
           {
             ProximityServerPort = (int)si.Port;
