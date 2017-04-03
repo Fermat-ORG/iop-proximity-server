@@ -54,6 +54,9 @@ namespace ProximityServer.Kernel
     /// <summary>External IP address of the server from its network peers' point of view.</summary>
     public IPAddress ExternalServerAddress;
 
+    /// <summary>Name of the database file.</summary>
+    public string DatabaseFileName;
+
     /// <summary>Maximal number of activities this server is willing to maintain.</summary>
     public int MaxActivities;
 
@@ -155,6 +158,7 @@ namespace ProximityServer.Kernel
         ConfigServerRoles serverRoles = null;
         IPAddress externalServerAddress = null;
         IPAddress bindToInterface = null;
+        string databaseFileName = null;
         int maxActivities = 0;
         int neighborhoodInitializationParallelism = 0;
         int locPort = 0;
@@ -177,6 +181,7 @@ namespace ProximityServer.Kernel
           { "primary_interface_port",                  ConfigValueType.Port           },
           { "neighbor_interface_port",                 ConfigValueType.Port           },
           { "client_interface_port",                   ConfigValueType.Port           },
+          { "db_file_name",                            ConfigValueType.StringNonEmpty },
           { "tls_server_certificate",                  ConfigValueType.StringNonEmpty },
           { "max_activities",                          ConfigValueType.Int            },
           { "neighborhood_initialization_parallelism", ConfigValueType.Int            },
@@ -194,6 +199,7 @@ namespace ProximityServer.Kernel
           testModeEnabled = (bool)nameVal["test_mode"];
           externalServerAddress = (IPAddress)nameVal["external_server_address"];
           bindToInterface = (IPAddress)nameVal["bind_to_interface"];
+          databaseFileName = (string)nameVal["db_file_name"];
           int primaryInterfacePort = (int)nameVal["primary_interface_port"];
           int neighborInterfacePort = (int)nameVal["neighbor_interface_port"];
           int clientInterfacePort = (int)nameVal["client_interface_port"];
@@ -222,6 +228,15 @@ namespace ProximityServer.Kernel
           if (!testModeEnabled && externalServerAddress.IsReservedOrLocal())
           {
             log.Error("external_server_address must be an IP address of external, publicly accessible interface.");
+            error = true;
+          }
+        }
+
+        if (!error)
+        {
+          if (!File.Exists(databaseFileName))
+          {
+            log.Error("Database file '{0}' does not exist.", databaseFileName);
             error = true;
           }
         }
@@ -360,6 +375,9 @@ namespace ProximityServer.Kernel
 
           ServerRoles = serverRoles;
           Settings["ServerRoles"] = ServerRoles;
+
+          DatabaseFileName = databaseFileName;
+          Settings["DatabaseFileName"] = DatabaseFileName;
 
           TcpServerTlsCertificate = tcpServerTlsCertificate;
           Settings["TcpServerTlsCertificate"] = TcpServerTlsCertificate;

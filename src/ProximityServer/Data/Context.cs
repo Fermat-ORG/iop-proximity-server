@@ -14,8 +14,8 @@ namespace ProximityServer.Data
   /// </summary>
   public class Context : DbContext
   {
-    /// <summary>Name of the database file.</summary>
-    public const string DatabaseFileName = "ProximityServer.db";
+    /// <summary>Default name of the database file.</summary>
+    public const string DefaultDatabaseFileName = "ProximityServer.db";
 
     /// <summary>Access to profile server's settings in the database.</summary>
     public DbSet<Setting> Settings { get; set; }
@@ -26,7 +26,10 @@ namespace ProximityServer.Data
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
       string currentDirectory = Directory.GetCurrentDirectory();
-      optionsBuilder.UseSqlite(string.Format("Filename={0}", Path.Combine(currentDirectory, DatabaseFileName)));
+      string path = Path.Combine(currentDirectory, DefaultDatabaseFileName);
+
+      string dbFileName = Config.Configuration != null ? Config.Configuration.DatabaseFileName : path;
+      optionsBuilder.UseSqlite(string.Format("Filename={0}", dbFileName));
 
       Microsoft.Extensions.Logging.LoggerFactory loggerFactory = new Microsoft.Extensions.Logging.LoggerFactory();
       loggerFactory.AddProvider(new DbLoggerProvider());
