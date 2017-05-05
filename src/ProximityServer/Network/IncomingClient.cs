@@ -65,7 +65,7 @@ namespace ProximityServer.Network
     private object activitySearchResultCacheLock = new object();
 
     /// <summary>Cache for activity search result queries.</summary>
-    //private List<ActivityInformation> activitySearchResultCache;
+    private List<ActivityNetworkInformation> activitySearchResultCache;
 
     /// <summary>
     /// Timer for activity search result cache expiration. When the timer's routine is called, 
@@ -156,12 +156,12 @@ namespace ProximityServer.Network
       log.Trace("(-)");
     }
 
-    /*
+    
     /// <summary>
     /// Saves search results to the client session cache.
     /// </summary>
     /// <param name="SearchResults">Search results to save.</param>
-    public void SaveActivitySearchResults(List<ActivityInformation> SearchResults)
+    public void SaveActivitySearchResults(List<ActivityNetworkInformation> SearchResults)
     {
       log.Trace("(SearchResults.GetHashCode():{0})", SearchResults.GetHashCode());
 
@@ -211,15 +211,15 @@ namespace ProximityServer.Network
     /// <param name="Index">Index of the first item to retrieve.</param>
     /// <param name="Count">Number of items to retrieve.</param>
     /// <returns>A copy of search results loaded from the cache or null if the required item range is not available.</returns>
-    public List<ActivityInformation> GetActivitySearchResults(int Index, int Count)
+    public List<ActivityNetworkInformation> GetActivitySearchResults(int Index, int Count)
     {
       log.Trace("()");
 
-      List<ActivityInformation> res = null;
+      List<ActivityNetworkInformation> res = null;
       lock (activitySearchResultCacheLock)
       {
         if ((activitySearchResultCache != null) && (Index + Count <= activitySearchResultCache.Count))
-          res = new List<ActivityInformation>(activitySearchResultCache.GetRange(Index, Count));
+          res = new List<ActivityNetworkInformation>(activitySearchResultCache.GetRange(Index, Count));
       }
 
       log.Trace("(-):*.Count={0}", res != null ? res.Count.ToString() : "N/A");
@@ -230,11 +230,11 @@ namespace ProximityServer.Network
     /// <summary>
     /// Callback routine that is called once the activitySearchResultCacheExpirationTimer expires to delete cached search results.
     /// </summary>
-    /// <param name="state">Search results object that was set during the timer initialization.
+    /// <param name="State">Search results object that was set during the timer initialization.
     /// this has to match the current search results, otherwise it means the results have been replaced already.</param>
     private void ActivitySearchResultCacheTimerCallback(object State)
     {
-      List<ActivityInformation> searchResults = (List<ActivityInformation>)State;
+      List<ActivityNetworkInformation> searchResults = (List<ActivityNetworkInformation>)State;
       log.Trace("(State.GetHashCode():{0})", searchResults.GetHashCode());
 
       lock (activitySearchResultCacheLock)
@@ -255,7 +255,7 @@ namespace ProximityServer.Network
       }
 
       log.Trace("(-)");
-    }*/
+    }
     
 
     /// <summary>
@@ -354,7 +354,7 @@ namespace ProximityServer.Network
       if (Disposing)
       {
         base.Dispose(Disposing);
-        /*
+        
         lock (activitySearchResultCacheLock)
         {
           if (activitySearchResultCacheExpirationTimer != null)
@@ -362,7 +362,7 @@ namespace ProximityServer.Network
 
           activitySearchResultCacheExpirationTimer = null;
           activitySearchResultCache = null;
-        }*/
+        }
       }
     }
   }

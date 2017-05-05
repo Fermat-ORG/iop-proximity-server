@@ -23,6 +23,14 @@ namespace ProximityServer.Data.Models
     /// <summary>Maximum number of bytes that profile extra data can occupy.</summary>
     public const int MaxActivityExtraDataLengthBytes = 2048;
 
+    /// <summary>Maximum value of activity location precision.</summary>
+    public const int MaxLocationPrecision = 1000;
+
+    /// <summary>Maximum life time of the activity in hours. Activity's expiration time can't be set more than this many hours in the future.</summary>
+    public const int MaxActivityLifeTimeHours = 24;
+
+    /// <summary>Special type of activity that is used internally and should not be displayed to users.</summary>
+    public const string InternalInvalidActivityType = "<INVALID_INTERNAL>";
 
     /// <summary>Unique primary key for the database.</summary>
     /// <remarks>This is primary key - see ProximityServer.Data.Context.OnModelCreating.</remarks>
@@ -39,13 +47,18 @@ namespace ProximityServer.Data.Models
     /// <summary>User defined activity identifier that together with OwnerIdentityId must form a unique identifier of the activity within the network.</summary>
     /// <remarks>This is index - see ProximityServer.Data.Context.OnModelCreating.</remarks>
     [Required]
-    public int ActivityId { get; set; }
+    public uint ActivityId { get; set; }
 
     /// <summary>Network identifier of the identity that created the activity.</summary>
     /// <remarks>This is index - see ProximityServer.Data.Context.OnModelCreating.</remarks>
     [Required]
     [MaxLength(ProtocolHelper.NetworkIdentifierLength)]
     public byte[] OwnerIdentityId { get; set; }
+
+    /// <summary>Public key the identity that created the activity.</summary>
+    [Required]
+    [MaxLength(ProtocolHelper.MaxPublicKeyLengthBytes)]
+    public byte[] OwnerPublicKey { get; set; }
 
     /// <summary>Network identifier of the profile server where the owner of the activity has its profile.</summary>
     [Required]

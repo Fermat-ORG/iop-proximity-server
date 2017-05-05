@@ -245,7 +245,7 @@ namespace ProximityServer.Data
           log.Debug("Removing {0} uninitialized neighbors.", neighborsToDelete.Count);
           foreach (Neighbor neighbor in neighborsToDelete)
           {
-            Task<bool> task = unitOfWork.NeighborRepository.DeleteNeighbor(unitOfWork, neighbor.NeighborId);
+            Task<bool> task = unitOfWork.NeighborRepository.DeleteNeighborAsync(neighbor.NeighborId);
             if (!task.Result)
             {
               log.Error("Unable to delete neighbor ID '{0}' from the database.", neighbor.NeighborId.ToHex());
@@ -404,6 +404,8 @@ namespace ProximityServer.Data
       // If a follower server's LastRefreshTime is lower than this limit, it should be refreshed.
       DateTime limitLastRefreshTime = DateTime.UtcNow.AddSeconds(-Config.Configuration.FollowerRefreshTimeSeconds);
 
+      List<byte[]> followersToDeleteIds = new List<byte[]>();
+
       using (UnitOfWork unitOfWork = new UnitOfWork())
       {
         DatabaseLock[] lockObjects = new DatabaseLock[] { UnitOfWork.FollowerLock, UnitOfWork.NeighborhoodActionLock };
@@ -413,25 +415,42 @@ namespace ProximityServer.Data
           List<Follower> followersToRefresh = (await unitOfWork.FollowerRepository.GetAsync(f => f.LastRefreshTime < limitLastRefreshTime, null, true)).ToList();
           if (followersToRefresh.Count > 0)
           {
+            bool saveDb = false;
+            int actionsInserted = 0;
+
             log.Debug("There are {0} followers that need refresh.", followersToRefresh.Count);
             foreach (Follower follower in followersToRefresh)
             {
-              NeighborhoodAction action = new NeighborhoodAction()
+              int unprocessedRefreshProfileActions = await unitOfWork.NeighborhoodActionRepository.CountAsync(a => (a.ServerId == follower.FollowerId) && (a.Type == NeighborhoodActionType.RefreshProfiles));
+              if (unprocessedRefreshProfileActions < 3)
               {
-                ServerId = follower.FollowerId,
-                Type = NeighborhoodActionType.RefreshProfiles,
-                Timestamp = DateTime.UtcNow,
-                ExecuteAfter = DateTime.UtcNow,
-                TargetIdentityId = null,
-                AdditionalData = null
-              };
+                NeighborhoodAction action = new NeighborhoodAction()
+                {
+                  ServerId = follower.FollowerId,
+                  Type = NeighborhoodActionType.RefreshProfiles,
+                  Timestamp = DateTime.UtcNow,
+                  ExecuteAfter = DateTime.UtcNow,
+                  TargetIdentityId = null,
+                  AdditionalData = null
+                };
 
-              await unitOfWork.NeighborhoodActionRepository.InsertAsync(action);
-              log.Debug("Refresh neighborhood action for follower ID '{0}' will be inserted to the database.", follower.FollowerId.ToHex());
+                await unitOfWork.NeighborhoodActionRepository.InsertAsync(action);
+                log.Debug("Refresh neighborhood action for follower ID '{0}' will be inserted to the database.", follower.FollowerId.ToHex());
+                saveDb = true;
+                actionsInserted++;
+              }
+              else
+              {
+                log.Debug("There are {0} unprocessed RefreshProfiles neighborhood actions for follower ID '{1}'. Follower will be deleted.", unprocessedRefreshProfileActions, follower.FollowerId.ToHex());
+                followersToDeleteIds.Add(follower.FollowerId);
+              }
             }
 
-            await unitOfWork.SaveThrowAsync();
-            log.Debug("{0} new neighborhood actions saved to the database.", followersToRefresh.Count);
+            if (saveDb)
+            {
+              await unitOfWork.SaveThrowAsync();
+              log.Debug("{0} new neighborhood actions saved to the database.", actionsInserted);
+            }
           }
           else log.Debug("No followers need refresh now.");
         }
@@ -441,6 +460,19 @@ namespace ProximityServer.Data
         }
 
         unitOfWork.ReleaseLock(lockObjects);
+
+
+        if (followersToDeleteIds.Count > 0)
+        {
+          log.Debug("There are {0} followers to be deleted.", followersToDeleteIds.Count);
+          foreach (byte[] followerToDeleteId in followersToDeleteIds)
+          {
+            Iop.Shared.Status status = unitOfWork.FollowerRepository.DeleteFollowerAsync(followerToDeleteId).Result;
+            if (status == Iop.Shared.Status.Ok) log.Debug("Follower ID '{0}' deleted.", followerToDeleteId.ToHex());
+            else log.Warn("Unable to delete follower ID '{0}', error code {1}.", followerToDeleteId.ToHex(), status);
+          }
+        }
+        else log.Debug("No followers to delete now.");
       }*/
 
       log.Trace("(-)");
@@ -535,6 +567,8 @@ namespace ProximityServer.Data
       // If a neighbor server's LastRefreshTime is lower than this limit, it is expired.
       DateTime limitLastRefreshTime = DateTime.UtcNow.AddSeconds(-Config.Configuration.NeighborExpirationTimeSeconds);
 
+      List<byte[]> neighborsToDeleteIds = new List<byte[]>();
+
       using (UnitOfWork unitOfWork = new UnitOfWork())
       {
         bool success = false;
@@ -546,24 +580,40 @@ namespace ProximityServer.Data
             List<Neighbor> expiredNeighbors = (await unitOfWork.NeighborRepository.GetAsync(n => n.LastRefreshTime < limitLastRefreshTime, null, true)).ToList();
             if (expiredNeighbors.Count > 0)
             {
+              bool saveDb = false;
+
               log.Debug("There are {0} expired neighbors.", expiredNeighbors.Count);
               foreach (Neighbor neighbor in expiredNeighbors)
               {
-                // This action will cause our proximity server to erase all activities of the neighbor that has been removed.
-                NeighborhoodAction action = new NeighborhoodAction()
+                int unprocessedRemoveNeighborActions = await unitOfWork.NeighborhoodActionRepository.CountAsync(a => (a.ServerId == neighbor.NeighborId) && (a.Type == NeighborhoodActionType.RemoveNeighbor));
+
+                if (unprocessedRemoveNeighborActions == 0)
                 {
-                  ServerId = neighbor.NeighborId,
-                  Timestamp = DateTime.UtcNow,
-                  Type = NeighborhoodActionType.RemoveNeighbor,
-                  TargetActivityId = null,
-                  TargetActivityOwnerId = null,
-                  AdditionalData = null
-                };
-                await unitOfWork.NeighborhoodActionRepository.InsertAsync(action);
+                  // This action will cause our proximity server to erase all profiles of the neighbor that has been removed.
+                  NeighborhoodAction action = new NeighborhoodAction()
+                  {
+                    ServerId = neighbor.NeighborId,
+                    Timestamp = DateTime.UtcNow,
+                    Type = NeighborhoodActionType.RemoveNeighbor,
+                    TargetActivityId = 0,
+                    TargetActivityOwnerId = null,
+                    AdditionalData = null                    
+                  };
+                  await unitOfWork.NeighborhoodActionRepository.InsertAsync(action);
+                  saveDb = true;
+                }
+                else
+                {
+                  log.Debug("There is an unprocessed RemoveNeighbor neighborhood action for neighbor ID '{0}'. Neighbor will be deleted.", neighbor.NeighborId.ToHex());
+                  neighborsToDeleteIds.Add(neighbor.NeighborId);
+                }
               }
 
-              await unitOfWork.SaveThrowAsync();
-              transaction.Commit();
+              if (saveDb)
+              {
+                await unitOfWork.SaveThrowAsync();
+                transaction.Commit();
+              }
             }
             else log.Debug("No expired neighbors found.");
 
@@ -582,6 +632,18 @@ namespace ProximityServer.Data
 
           unitOfWork.ReleaseLock(lockObjects);
         }
+
+
+        if (neighborsToDeleteIds.Count > 0)
+        {
+          log.Debug("There are {0} neighbors to be deleted.", neighborsToDeleteIds.Count);
+          foreach (byte[] neighborToDeleteId in neighborsToDeleteIds)
+          {
+            if (await unitOfWork.NeighborRepository.DeleteNeighborAsync(neighborToDeleteId)) log.Debug("Neighbor ID '{0}' deleted.", neighborToDeleteId.ToHex());
+            else log.Warn("Unable to delete neighbor ID '{0}'.", neighborToDeleteId.ToHex());
+          }
+        }
+        else log.Debug("No neighbors to delete now.");
       }
 
       log.Trace("(-)");

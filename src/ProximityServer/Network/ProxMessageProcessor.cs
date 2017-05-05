@@ -20,6 +20,9 @@ using IopServerCore.Kernel;
 using IopServerCore.Data;
 using IopServerCore.Network;
 using IopServerCore.Network.CAN;
+using System.Net;
+using Iop.Shared;
+using System.Runtime.CompilerServices;
 
 namespace ProximityServer.Network
 {
@@ -134,6 +137,26 @@ namespace ProximityServer.Network
 
                       case ConversationRequest.RequestTypeOneofCase.VerifyIdentity:
                         responseMessage = ProcessMessageVerifyIdentityRequest(client, incomingMessage);
+                        break;
+
+                      case ConversationRequest.RequestTypeOneofCase.CreateActivity:
+                        responseMessage = await ProcessMessageCreateActivityRequestAsync(client, incomingMessage);
+                        break;
+
+                      case ConversationRequest.RequestTypeOneofCase.UpdateActivity:
+                        responseMessage = await ProcessMessageUpdateActivityRequestAsync(client, incomingMessage);
+                        break;
+
+                      case ConversationRequest.RequestTypeOneofCase.DeleteActivity:
+                        responseMessage = await ProcessMessageDeleteActivityRequestAsync(client, incomingMessage);
+                        break;
+
+                      case ConversationRequest.RequestTypeOneofCase.ActivitySearch:
+                        responseMessage = await ProcessMessageActivitySearchRequestAsync(client, incomingMessage);
+                        break;
+
+                      case ConversationRequest.RequestTypeOneofCase.ActivitySearchPart:
+                        responseMessage = ProcessMessageActivitySearchPartRequest(client, incomingMessage);
                         break;
 
                       default:
@@ -632,5 +655,1115 @@ namespace ProximityServer.Network
       log.Trace("(-):*.Response.Status={0}", res.Response.Status);
       return res;
     }
+
+
+    /// <summary>
+    /// Processes CreateActivityRequest message from client.
+    /// <para>It creates new activity on behalf of the client and initiates its propagation into the neighborhood.</para>
+    /// </summary>
+    /// <param name="Client">Client that sent the request.</param>
+    /// <param name="RequestMessage">Full request message.</param>
+    /// <returns>Response message to be sent to the client.</returns>
+    public async Task<ProxProtocolMessage> ProcessMessageCreateActivityRequestAsync(IncomingClient Client, ProxProtocolMessage RequestMessage)
+    {
+      log.Trace("()");
+
+      ProxProtocolMessage res = null;
+      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.Verified, out res))
+      {
+        log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+        return res;
+      }
+
+
+      ProxMessageBuilder messageBuilder = Client.MessageBuilder;
+      CreateActivityRequest createActivityRequest = RequestMessage.Request.ConversationRequest.CreateActivity;
+
+      res = messageBuilder.CreateErrorInternalResponse(RequestMessage);
+      ProxProtocolMessage errorResponse;
+      if (ValidateCreateActivityRequest(createActivityRequest, messageBuilder, RequestMessage, out errorResponse))
+      {
+        GpsLocation activityLocation = new GpsLocation(createActivityRequest.Latitude, createActivityRequest.Longitude);
+
+        using (UnitOfWork unitOfWork = new UnitOfWork())
+        {
+          StrongBox<byte[]> nearestServerId = new StrongBox<byte[]>(null);
+          List<byte[]> ignoreServerIds = new List<byte[]>(createActivityRequest.IgnoreServerIds.Select(i => i.ToByteArray()));
+          if (await unitOfWork.NeighborRepository.IsServerNearestToLocationAsync(activityLocation, ignoreServerIds, nearestServerId))
+          {
+            PrimaryActivity activity = new PrimaryActivity()
+            {
+              Version = new SemVer(createActivityRequest.Version).ToByteArray(),
+              ActivityId = createActivityRequest.Id,
+              OwnerIdentityId = Client.IdentityId,
+              OwnerPublicKey = Client.PublicKey,
+              OwnerProfileServerId = createActivityRequest.ProfileServerContact.NetworkId.ToByteArray(),
+              OwnerProfileServerIpAddress = createActivityRequest.ProfileServerContact.IpAddress.ToByteArray(),
+              OwnerProfileServerPrimaryPort = (ushort)createActivityRequest.ProfileServerContact.PrimaryPort,
+              Type = createActivityRequest.Type,
+              LocationLatitude = activityLocation.Latitude,
+              LocationLongitude = activityLocation.Longitude,
+              PrecisionRadius = createActivityRequest.Precision,
+              StartTime = ProtocolHelper.UnixTimestampMsToDateTime(createActivityRequest.StartTime).Value,
+              ExpirationTime = ProtocolHelper.UnixTimestampMsToDateTime(createActivityRequest.ExpirationTime).Value,
+              ExtraData = createActivityRequest.ExtraData
+            };
+
+            StrongBox<int> existingActivityId = new StrongBox<int>(0);
+            if (await unitOfWork.PrimaryActivityRepository.CreateAndPropagateAsync(activity, existingActivityId))
+            {
+              res = messageBuilder.CreateCreateActivityResponse(RequestMessage);
+            }
+            else if (existingActivityId.Value != 0)
+            {
+              log.Debug("Activity with the activity ID {0} and owner identity ID '{1}' already exists with database ID {2}.", activity.ActivityId, activity.OwnerIdentityId.ToHex(), existingActivityId.Value);
+              res = messageBuilder.CreateErrorAlreadyExistsResponse(RequestMessage);
+            }
+          }
+          else
+          {
+            if (nearestServerId.Value != null)
+            {
+              log.Debug("Creation of activity rejected because the server is not the nearest proximity server.");
+              res = messageBuilder.CreateErrorRejectedResponse(RequestMessage, nearestServerId.Value.ToHex());
+            }
+            // else Internal error
+          }
+        }
+      }
+      else res = errorResponse;
+
+      log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+      return res;
+    }
+
+
+    /// <summary>
+    /// Checks whether the create activity request is valid.
+    /// <para>This function does not verify the uniqueness of the activity identifier.
+    /// It also does not verify whether a closer proximity server exists.</para>
+    /// </summary>
+    /// <param name="CreateActivityRequest">Create activity request part of the client's request message.</param>
+    /// <param name="MessageBuilder">Client's network message builder.</param>
+    /// <param name="RequestMessage">Full request message from client.</param>
+    /// <param name="ErrorResponse">If the function fails, this is filled with error response message that is ready to be sent to the client.</param>
+    /// <returns>true if the create activity request can be applied, false otherwise.</returns>
+    private bool ValidateCreateActivityRequest(CreateActivityRequest CreateActivityRequest, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
+    {
+      log.Trace("()");
+
+      bool res = false;
+      ErrorResponse = null;
+
+      string details = null;
+
+      SemVer version = new SemVer(CreateActivityRequest.Version);
+
+      // Currently only supported version is 1.0.0.
+      if (!version.Equals(SemVer.V100))
+      {
+        log.Debug("Unsupported version '{0}'.", version);
+        details = "version";
+      }
+
+
+      if (details == null)
+      {
+        uint activityId = CreateActivityRequest.Id;
+
+        // 0 is not a valid activity identifier.
+        if (activityId == 0)
+        {
+          log.Debug("Invalid activity ID '{0}'.", activityId);
+          details = "id";
+        }
+      }
+
+      if (details == null)
+      {
+        ServerContactInfo sci = CreateActivityRequest.ProfileServerContact;
+        bool networkIdValid = sci.NetworkId.Length == ProtocolHelper.NetworkIdentifierLength;
+        IPAddress ipAddress = IPAddressExtensions.IpFromBytes(sci.IpAddress.ToByteArray());
+        bool ipAddressValid = (ipAddress != null) && (Config.Configuration.TestModeEnabled || !ipAddress.IsReservedOrLocal());
+        bool portValid = (1 <= sci.PrimaryPort) && (sci.PrimaryPort <= 65535);
+
+        if (!networkIdValid || !ipAddressValid || !portValid)
+        {
+          log.Debug("Profile server contact's network ID is {0}, IP address is {1}, port is {2}.", networkIdValid ? "valid" : "invalid", ipAddressValid ? "valid" : "invalid", portValid ? "valid" : "invalid");
+
+          if (!networkIdValid) details = "profileServerContact.networkId";
+          else if (!ipAddressValid) details = "profileServerContact.ipAddress";
+          else if (!portValid) details = "profileServerContact.primaryPort";
+        }
+      }
+
+      if (details == null)
+      {
+        string activityType = CreateActivityRequest.Type;
+        if (activityType == null) activityType = "";
+
+        int byteLen = Encoding.UTF8.GetByteCount(activityType);
+        if (byteLen > ActivityBase.MaxActivityTypeLengthBytes)
+        {
+          log.Debug("Activity type too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityTypeLengthBytes);
+          details = "type";
+        }
+      }
+
+      if (details == null)
+      {
+        GpsLocation locLat = new GpsLocation(CreateActivityRequest.Latitude, 0);
+        GpsLocation locLong = new GpsLocation(0, CreateActivityRequest.Longitude);
+        if (!locLat.IsValid())
+        {
+          log.Debug("Latitude '{0}' is not a valid GPS latitude value.", CreateActivityRequest.Latitude);
+          details = "latitude";
+        }
+        else if (!locLong.IsValid())
+        {
+          log.Debug("Longitude '{0}' is not a valid GPS longitude value.", CreateActivityRequest.Longitude);
+          details = "longitude";
+        }
+      }
+
+      if (details == null)
+      {
+        uint precision = CreateActivityRequest.Precision;
+        bool precisionValid = (0 <= precision) && (precision <= ActivityBase.MaxLocationPrecision);
+        if (!precisionValid)
+        {
+          log.Debug("Precision '{0}' is not an integer between 0 and {1}.", precision, ActivityBase.MaxLocationPrecision);
+          details = "precision";
+        }
+      }
+
+
+      if (details == null)
+      {
+        DateTime? startTime = ProtocolHelper.UnixTimestampMsToDateTime(CreateActivityRequest.StartTime);
+        DateTime? expirationTime = ProtocolHelper.UnixTimestampMsToDateTime(CreateActivityRequest.ExpirationTime);
+
+        if (startTime == null)
+        {
+          log.Debug("Invalid activity start time timestamp '{0}'.", CreateActivityRequest.StartTime);
+          details = "startTime";
+        }
+        else if (expirationTime == null)
+        {
+          log.Debug("Invalid activity expiration time timestamp '{0}'.", CreateActivityRequest.ExpirationTime);
+          details = "expirationTime";
+        }
+        else
+        {
+          if (startTime > expirationTime)
+          {
+            log.Debug("Activity expiration time has to be greater than or equal to its start time.");
+            details = "expirationTime";
+          }
+          else if (expirationTime.Value > DateTime.UtcNow.AddHours(ActivityBase.MaxActivityLifeTimeHours))
+          {
+            log.Debug("Activity expiration time {0} is more than {1} hours in the future.", expirationTime.Value.ToString("yyyy-MM-dd HH:mm:ss"), ActivityBase.MaxActivityLifeTimeHours);
+            details = "expirationTime";
+          }
+        }
+      }
+
+      if (details == null)
+      {
+        string extraData = CreateActivityRequest.ExtraData;
+        if (extraData == null) extraData = "";
+
+
+        // Extra data is semicolon separated 'key=value' list, max ActivityBase.MaxActivityExtraDataLengthBytes bytes long.
+        int byteLen = Encoding.UTF8.GetByteCount(extraData);
+        if (byteLen > ActivityBase.MaxActivityExtraDataLengthBytes)
+        {
+          log.Debug("Extra data too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityExtraDataLengthBytes);
+          details = "extraData";
+        }
+      }
+
+      if (details == null)
+      {
+        int index = 0;
+        foreach (ByteString serverId in CreateActivityRequest.IgnoreServerIds)
+        {
+          if (serverId.Length != ProtocolHelper.NetworkIdentifierLength)
+          {
+            log.Debug("Ignored server ID #{0} is not a valid network ID as its length is {1} bytes.", index, serverId.Length);
+            details = "ignoreServerIds";
+            break;
+          }
+
+          index++;
+        }
+      }
+
+      if (details == null)
+      {
+        res = true;
+      }
+      else ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, details);
+
+
+      log.Trace("(-):{0}", res);
+      return res;
+    }
+
+
+    /// <summary>
+    /// Processes UpdateActivityRequest message from client.
+    /// <para>Updates existing activity of the client and initiates propagation of the change into the neighborhood.</para>
+    /// </summary>
+    /// <param name="Client">Client that sent the request.</param>
+    /// <param name="RequestMessage">Full request message.</param>
+    /// <returns>Response message to be sent to the client.</returns>
+    public async Task<ProxProtocolMessage> ProcessMessageUpdateActivityRequestAsync(IncomingClient Client, ProxProtocolMessage RequestMessage)
+    {
+      log.Trace("()");
+
+      ProxProtocolMessage res = null;
+      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.Verified, out res))
+      {
+        log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+        return res;
+      }
+
+
+      ProxMessageBuilder messageBuilder = Client.MessageBuilder;
+      UpdateActivityRequest updateActivityRequest = RequestMessage.Request.ConversationRequest.UpdateActivity;
+
+      res = messageBuilder.CreateErrorInternalResponse(RequestMessage);
+      ProxProtocolMessage errorResponse;
+      if (ValidateUpdateActivityRequest(updateActivityRequest, messageBuilder, RequestMessage, out errorResponse))
+      {
+        using (UnitOfWork unitOfWork = new UnitOfWork())
+        {
+          bool error = false;
+          bool migrateActivity = false;
+          StrongBox<byte[]> nearestServerId = new StrongBox<byte[]>(null);
+          if (updateActivityRequest.SetLocation)
+          {
+            GpsLocation activityLocation = new GpsLocation(updateActivityRequest.Latitude, updateActivityRequest.Longitude);
+            List<byte[]> ignoreServerIds = new List<byte[]>(updateActivityRequest.IgnoreServerIds.Select(i => i.ToByteArray()));
+            if (!await unitOfWork.NeighborRepository.IsServerNearestToLocationAsync(activityLocation, ignoreServerIds, nearestServerId, ProxMessageBuilder.ActivityMigrationDistanceTolerance))
+            {
+              if (nearestServerId.Value != null)
+              {
+                migrateActivity = true;
+                log.Debug("Activity's new location is outside the reach of this proximity server, the activity will be deleted from the database.");
+                res = messageBuilder.CreateErrorRejectedResponse(RequestMessage, nearestServerId.Value.ToHex());
+              }
+              else error = true;
+            }
+          }
+
+          if (!error)
+          {
+            if (!migrateActivity)
+            {
+              Status status = await unitOfWork.PrimaryActivityRepository.UpdateAndPropagateAsync(updateActivityRequest, Client.IdentityId);
+              switch (status)
+              {
+                case Status.Ok:
+                  // Activity was updated and the change will be propagated to the neighborhood.
+                  res = messageBuilder.CreateUpdateActivityResponse(RequestMessage);
+                  break;
+
+                case Status.ErrorNotFound:
+                  // Activity of given ID not found among activities created by the client.
+                  res = messageBuilder.CreateErrorNotFoundResponse(RequestMessage);
+                  break;
+
+                case Status.ErrorInvalidValue:
+                  // Activity's new start time is greater than its new expiration time.
+                  res = messageBuilder.CreateErrorInvalidValueResponse(RequestMessage, "expirationTime");
+                  break;
+
+                default:
+                  // Internal error
+                  break;
+              }
+            }
+            else
+            {
+              // The update is rejected, there is a closer server to the activity's new location.
+              StrongBox<bool> notFound = new StrongBox<bool>(false);
+              if (await unitOfWork.PrimaryActivityRepository.DeleteAndPropagateAsync(updateActivityRequest.Id, Client.IdentityId, notFound))
+              {
+                if (!notFound.Value)
+                {
+                  // The activity was deleted from the database and this change will be propagated to the neighborhood.
+                  log.Debug("Update rejected, activity ID {0}, owner ID '{1}' deleted.", updateActivityRequest.Id, Client.IdentityId);
+                  res = messageBuilder.CreateErrorRejectedResponse(RequestMessage, nearestServerId.Value.ToHex());
+                }
+                else
+                {
+                  // Activity of given ID not found among activities created by the client.
+                  res = messageBuilder.CreateErrorNotFoundResponse(RequestMessage);
+                }
+              }
+            }
+          }
+          // else Internal error
+        }
+      }
+      else res = errorResponse;
+
+      log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+      return res;
+    }
+
+
+    /// <summary>
+    /// Checks whether the update activity request is valid.
+    /// <para>This function does not verify whether the activity exists.
+    /// It also does not verify whether a closer proximity server exists to which the activity should be migrated.
+    /// It also does not verify whether the changed activity's start time will be before expiration time.</para>
+    /// </summary>
+    /// <param name="UpdateActivityRequest">Update activity request part of the client's request message.</param>
+    /// <param name="MessageBuilder">Client's network message builder.</param>
+    /// <param name="RequestMessage">Full request message from client.</param>
+    /// <param name="ErrorResponse">If the function fails, this is filled with error response message that is ready to be sent to the client.</param>
+    /// <returns>true if the update activity request can be applied, false otherwise.</returns>
+    private bool ValidateUpdateActivityRequest(UpdateActivityRequest UpdateActivityRequest, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
+    {
+      log.Trace("()");
+
+      bool res = false;
+      ErrorResponse = null;
+
+      string details = null;
+
+      if (!UpdateActivityRequest.SetLocation
+        && !UpdateActivityRequest.SetPrecision
+        && !UpdateActivityRequest.SetStartTime
+        && !UpdateActivityRequest.SetExpirationTime
+        && !UpdateActivityRequest.SetExtraData)
+      {
+        log.Debug("Update request does not want to change anything.");
+        details = "set*";
+      }
+
+      if (details == null)
+      {
+        uint activityId = UpdateActivityRequest.Id;
+
+        // 0 is not a valid activity identifier.
+        if (activityId == 0)
+        {
+          log.Debug("Invalid activity ID '{0}'.", activityId);
+          details = "id";
+        }
+      }
+
+      if ((details == null) && UpdateActivityRequest.SetLocation)
+      {
+        GpsLocation locLat = new GpsLocation(UpdateActivityRequest.Latitude, 0);
+        GpsLocation locLong = new GpsLocation(0, UpdateActivityRequest.Longitude);
+        if (!locLat.IsValid())
+        {
+          log.Debug("Latitude '{0}' is not a valid GPS latitude value.", UpdateActivityRequest.Latitude);
+          details = "latitude";
+        }
+        else if (!locLong.IsValid())
+        {
+          log.Debug("Longitude '{0}' is not a valid GPS longitude value.", UpdateActivityRequest.Longitude);
+          details = "longitude";
+        }
+      }
+
+      if ((details == null) && UpdateActivityRequest.SetPrecision)
+      {
+        uint precision = UpdateActivityRequest.Precision;
+        bool precisionValid = (0 <= precision) && (precision <= ActivityBase.MaxLocationPrecision);
+        if (!precisionValid)
+        {
+          log.Debug("Precision '{0}' is not an integer between 0 and {1}.", precision, ActivityBase.MaxLocationPrecision);
+          details = "precision";
+        }
+      }
+
+
+      if ((details == null) && UpdateActivityRequest.SetStartTime)
+      {
+        DateTime? startTime = ProtocolHelper.UnixTimestampMsToDateTime(UpdateActivityRequest.StartTime);
+        if (startTime == null)
+        {
+          log.Debug("Invalid activity start time timestamp '{0}'.", UpdateActivityRequest.StartTime);
+          details = "startTime";
+        }
+      }
+
+      if ((details == null) && UpdateActivityRequest.SetExpirationTime)
+      {
+        DateTime? expirationTime = ProtocolHelper.UnixTimestampMsToDateTime(UpdateActivityRequest.ExpirationTime);
+        if (expirationTime != null)
+        {
+          if (expirationTime.Value > DateTime.UtcNow.AddHours(ActivityBase.MaxActivityLifeTimeHours))
+          {
+            log.Debug("Activity expiration time {0} is more than {1} hours in the future.", expirationTime.Value.ToString("yyyy-MM-dd HH:mm:ss"), ActivityBase.MaxActivityLifeTimeHours);
+            details = "expirationTime";
+          }
+        }
+        else
+        {
+          log.Debug("Invalid activity expiration time timestamp '{0}'.", UpdateActivityRequest.ExpirationTime);
+          details = "expirationTime";
+        }
+      }
+
+      if ((details == null) && UpdateActivityRequest.SetExtraData)
+      {
+        string extraData = UpdateActivityRequest.ExtraData;
+        if (extraData == null) extraData = "";
+
+
+        // Extra data is semicolon separated 'key=value' list, max ActivityBase.MaxActivityExtraDataLengthBytes bytes long.
+        int byteLen = Encoding.UTF8.GetByteCount(extraData);
+        if (byteLen > ActivityBase.MaxActivityExtraDataLengthBytes)
+        {
+          log.Debug("Extra data too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityExtraDataLengthBytes);
+          details = "extraData";
+        }
+      }
+
+      if (details == null)
+      {
+        int index = 0;
+        foreach (ByteString serverId in UpdateActivityRequest.IgnoreServerIds)
+        {
+          if (serverId.Length != ProtocolHelper.NetworkIdentifierLength)
+          {
+            log.Debug("Ignored server ID #{0} is not a valid network ID as its length is {1} bytes.", index, serverId.Length);
+            details = "ignoreServerIds";
+            break;
+          }
+
+          index++;
+        }
+      }
+
+      if (details == null)
+      {
+        res = true;
+      }
+      else ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, details);
+
+
+      log.Trace("(-):{0}", res);
+      return res;
+    }
+
+
+
+    /// <summary>
+    /// Processes DeleteActivityRequest message from client.
+    /// <para>Deletes existing activity of the client and initiates propagation of the change into the neighborhood.</para>
+    /// </summary>
+    /// <param name="Client">Client that sent the request.</param>
+    /// <param name="RequestMessage">Full request message.</param>
+    /// <returns>Response message to be sent to the client.</returns>
+    public async Task<ProxProtocolMessage> ProcessMessageDeleteActivityRequestAsync(IncomingClient Client, ProxProtocolMessage RequestMessage)
+    {
+      log.Trace("()");
+
+      ProxProtocolMessage res = null;
+      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.Verified, out res))
+      {
+        log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+        return res;
+      }
+
+
+      ProxMessageBuilder messageBuilder = Client.MessageBuilder;
+      DeleteActivityRequest deleteActivityRequest = RequestMessage.Request.ConversationRequest.DeleteActivity;
+
+      res = messageBuilder.CreateErrorInternalResponse(RequestMessage);
+      using (UnitOfWork unitOfWork = new UnitOfWork())
+      {
+        StrongBox<bool> notFound = new StrongBox<bool>(false);
+        if (await unitOfWork.PrimaryActivityRepository.DeleteAndPropagateAsync(deleteActivityRequest.Id, Client.IdentityId, notFound))
+        {
+          if (!notFound.Value)
+          {
+            // The activity was deleted from the database and this change will be propagated to the neighborhood.
+            log.Debug("Activity ID {0}, owner ID '{1}' deleted.", deleteActivityRequest.Id, Client.IdentityId);
+            res = messageBuilder.CreateDeleteActivityResponse(RequestMessage);
+          }
+          else
+          {
+            // Activity of given ID not found among activities created by the client.
+            res = messageBuilder.CreateErrorNotFoundResponse(RequestMessage);
+          }
+        }
+      }
+
+      log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+      return res;
+    }
+
+
+    /// <summary>
+    /// Minimal number of results we ask for from database. This limit prevents doing small database queries 
+    /// when there are many activities to be explored but very few of them actually match the client's criteria. 
+    /// Since not all filtering is done in the SQL query, we need to prevent ourselves from putting to much 
+    /// pressure on the database in those edge cases.
+    /// </summary>
+    public const int ActivitySearchBatchSizeMin = 1000;
+
+    /// <summary>
+    /// Multiplication factor to count maximal size of the batch from the number of required results.
+    /// Not all filtering is done in the SQL query. This means that in order to get a certain amount of results 
+    /// that the client asks for, it is likely that we need to load more records from the database.
+    /// This value provides information about how many times more do we load.
+    /// </summary>
+    public const decimal ActivitySearchBatchSizeMaxFactor = 10.0m;
+
+    /// <summary>Maximum amount of time in milliseconds that a single search query can take.</summary>
+    public const int ActivitySearchMaxTimeMs = 10000;
+
+    /// <summary>Maximum amount of time in milliseconds that we want to spend on regular expression matching of extraData.</summary>
+    public const int ActivitySearchMaxExtraDataMatchingTimeTotalMs = 1000;
+
+    /// <summary>Maximum amount of time in milliseconds that we want to spend on regular expression matching of extraData of a single activity.</summary>
+    public const int ActivitySearchMaxExtraDataMatchingTimeSingleMs = 50;
+
+    /// <summary>Maximum number of results the proximity server can send in the response.</summary>
+    public const int ActivitySearchMaxResponseRecords = 1000;
+
+    /// <summary>Maximum number of results the proximity server can store in total for a single client if images are included.</summary>
+    public const int ActivitySearchMaxTotalRecords = 10000;
+
+
+    /// <summary>
+    /// Processes ActivitySearchRequest message from client.
+    /// <para>Performs a search operation to find all matching activities that this proximity server manages, 
+    /// possibly including activities managed in the server's neighborhood.</para>
+    /// </summary>
+    /// <param name="Client">Client that sent the request.</param>
+    /// <param name="RequestMessage">Full request message.</param>
+    /// <returns>Response message to be sent to the client.</returns>
+    public async Task<ProxProtocolMessage> ProcessMessageActivitySearchRequestAsync(IncomingClient Client, ProxProtocolMessage RequestMessage)
+    {
+      log.Trace("()");
+
+      ProxProtocolMessage res = null;
+      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.ConversationAny, out res))
+      {
+        log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+        return res;
+      }
+
+      ProxMessageBuilder messageBuilder = Client.MessageBuilder;
+      ActivitySearchRequest activitySearchRequest = RequestMessage.Request.ConversationRequest.ActivitySearch;
+
+      ProxProtocolMessage errorResponse;
+      if (ValidateActivitySearchRequest(activitySearchRequest, messageBuilder, RequestMessage, out errorResponse))
+      {
+        res = messageBuilder.CreateErrorInternalResponse(RequestMessage);
+        using (UnitOfWork unitOfWork = new UnitOfWork())
+        {
+          Stopwatch watch = new Stopwatch();
+          try
+          {
+            uint maxResults = activitySearchRequest.MaxTotalRecordCount;
+            uint maxResponseResults = activitySearchRequest.MaxResponseRecordCount;
+            uint activityIdFilter = activitySearchRequest.Id;
+            byte[] ownerIdFilter = (activitySearchRequest.OwnerNetworkId != null) && (activitySearchRequest.OwnerNetworkId.Length > 0) ? activitySearchRequest.OwnerNetworkId.ToByteArray() : null;
+            string typeFilter = activitySearchRequest.Type;
+            DateTime? startNotAfterFilter = activitySearchRequest.StartNotAfter != 0 ? ProtocolHelper.UnixTimestampMsToDateTime(activitySearchRequest.StartNotAfter) : null;
+            DateTime? expirationNotBeforeFilter = activitySearchRequest.ExpirationNotBefore != 0 ? ProtocolHelper.UnixTimestampMsToDateTime(activitySearchRequest.ExpirationNotBefore) : null;
+            GpsLocation locationFilter = activitySearchRequest.Latitude != GpsLocation.NoLocationLocationType ? new GpsLocation(activitySearchRequest.Latitude, activitySearchRequest.Longitude) : null;
+            uint radiusFilter = activitySearchRequest.Radius;
+            string extraDataFilter = activitySearchRequest.ExtraData;
+
+            watch.Start();
+
+            // First, we try to find enough results among primary activities of this proximity server.
+            List<ActivityNetworkInformation> searchResultsNeighborhood = new List<ActivityNetworkInformation>();
+            List<ActivityNetworkInformation> searchResultsLocal = await ActivitySearchAsync(unitOfWork, unitOfWork.PrimaryActivityRepository, maxResults, activityIdFilter, ownerIdFilter, typeFilter,
+              startNotAfterFilter, expirationNotBeforeFilter, locationFilter, radiusFilter, extraDataFilter, watch);
+            if (searchResultsLocal != null)
+            {
+              bool localServerOnly = true;
+              bool error = false;
+              // If possible and needed we try to find more results among identities hosted in this profile server's neighborhood.
+              if (!activitySearchRequest.IncludePrimaryOnly && (searchResultsLocal.Count < maxResults))
+              {
+                localServerOnly = false;
+                maxResults -= (uint)searchResultsLocal.Count;
+                searchResultsNeighborhood = await ActivitySearchAsync(unitOfWork, unitOfWork.NeighborActivityRepository, maxResults, activityIdFilter, ownerIdFilter, typeFilter,
+                  startNotAfterFilter, expirationNotBeforeFilter, locationFilter, radiusFilter, extraDataFilter, watch);
+                if (searchResultsNeighborhood == null)
+                {
+                  log.Error("Activity search among neighborhood activities failed.");
+                  error = true;
+                }
+              }
+
+              if (!error)
+              {
+                // Now we have all required results in searchResultsLocal and searchResultsNeighborhood.
+                // If the number of results is small enough to fit into a single response, we send them all.
+                // Otherwise, we save them to the session context and only send first part of them.
+                List<ActivityNetworkInformation> allResults = searchResultsLocal;
+                allResults.AddRange(searchResultsNeighborhood);
+                List<ActivityNetworkInformation> responseResults = allResults;
+                log.Debug("Total number of matching activities is {0}, from which {1} are local, {2} are from neighbors.", allResults.Count, searchResultsLocal.Count, searchResultsNeighborhood.Count);
+                if (maxResponseResults < allResults.Count)
+                {
+                  log.Trace("All results can not fit into a single response (max {0} results).", maxResponseResults);
+                  // We can not send all results, save them to session.
+                  Client.SaveActivitySearchResults(allResults);
+
+                  // And send the maximum we can in the response.
+                  responseResults = new List<ActivityNetworkInformation>();
+                  responseResults.AddRange(allResults.GetRange(0, (int)maxResponseResults));
+                }
+
+                List<byte[]> coveredServers = await ActivitySearchGetCoveredServersAsync(unitOfWork, localServerOnly);
+                res = messageBuilder.CreateActivitySearchResponse(RequestMessage, (uint)allResults.Count, maxResponseResults, coveredServers, responseResults);
+              }
+            }
+            else log.Error("Activity search among primary activities failed.");
+          }
+          catch (Exception e)
+          {
+            log.Error("Exception occurred: {0}", e.ToString());
+          }
+
+          watch.Stop();
+        }
+      }
+      else res = errorResponse;
+
+      if (res != null) log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+      else log.Trace("(-):null");
+      return res;
+    }
+
+
+    /// <summary>
+    /// Obtains list of covered proximity servers for a activity search query.
+    /// <para>If the search used the local activity database only, the result is simply ID of the local proximity server. 
+    /// Otherwise, it is its ID and a list of all its neighbors' IDs.</para>
+    /// </summary>
+    /// <param name="UnitOfWork">Unit of work instance.</param>
+    /// <param name="LocalServerOnly">true if the search query only used the local proximity server, false otherwise.</param>
+    /// <returns>List of network IDs of proximity servers whose database could be used to create the result.</returns>
+    /// <remarks>Note that the covered proximity server list is not guaranteed to be accurate. The search query processing is not atomic 
+    /// and during the process it may happen that a neighbor server can be added or removed from the list of neighbors.</remarks>
+    private async Task<List<byte[]>> ActivitySearchGetCoveredServersAsync(UnitOfWork UnitOfWork, bool LocalServerOnly)
+    {
+      log.Trace("()");
+
+      List<byte[]> res = new List<byte[]>();
+      res.Add(serverComponent.ServerId);
+      if (!LocalServerOnly)
+      {
+        List<byte[]> neighborIds = (await UnitOfWork.NeighborRepository.GetAsync(null, null, true)).Select(n => n.NeighborId).ToList();
+        res.AddRange(neighborIds);
+      }
+
+      log.Trace("(-):*.Count={0}", res.Count);
+      return res;
+    }
+
+    /// <summary>
+    /// Checks whether the activity search request is valid.
+    /// </summary>
+    /// <param name="ActivitySearchRequest">Activity search request part of the client's request message.</param>
+    /// <param name="MessageBuilder">Client's network message builder.</param>
+    /// <param name="RequestMessage">Full request message from client.</param>
+    /// <param name="ErrorResponse">If the function fails, this is filled with error response message that is ready to be sent to the client.</param>
+    /// <returns>true if the search request is valid, false otherwise.</returns>
+    private bool ValidateActivitySearchRequest(ActivitySearchRequest ActivitySearchRequest, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
+    {
+      log.Trace("()");
+
+      bool res = false;
+      ErrorResponse = null;
+      string details = null;
+
+      int responseResultLimit = ActivitySearchMaxResponseRecords;
+      int totalResultLimit = ActivitySearchMaxTotalRecords;
+
+      bool maxResponseRecordCountValid = (1 <= ActivitySearchRequest.MaxResponseRecordCount)
+        && (ActivitySearchRequest.MaxResponseRecordCount <= responseResultLimit)
+        && (ActivitySearchRequest.MaxResponseRecordCount <= ActivitySearchRequest.MaxTotalRecordCount);
+      if (!maxResponseRecordCountValid)
+      {
+        log.Debug("Invalid maxResponseRecordCount value '{0}'.", ActivitySearchRequest.MaxResponseRecordCount);
+        details = "maxResponseRecordCount";
+      }
+
+      if (details == null)
+      {
+        bool maxTotalRecordCountValid = (1 <= ActivitySearchRequest.MaxTotalRecordCount) && (ActivitySearchRequest.MaxTotalRecordCount <= totalResultLimit);
+        if (!maxTotalRecordCountValid)
+        {
+          log.Debug("Invalid maxTotalRecordCount value '{0}'.", ActivitySearchRequest.MaxTotalRecordCount);
+          details = "maxTotalRecordCount";
+        }
+      }
+
+      if ((details == null) && ((ActivitySearchRequest.OwnerNetworkId == null) || (ActivitySearchRequest.OwnerNetworkId.Length == 0)))
+      {
+        // If ActivitySearchRequest.Id is not zero, ActivitySearchRequest.OwnerNetworkId must not be empty.
+        bool ownerNetworkIdValid = ActivitySearchRequest.Id == 0;
+        if (!ownerNetworkIdValid)
+        {
+          log.Debug("Owner network ID is not used but activity ID is non-zero.");
+          details = "ownerNetworkId";
+        }
+      }
+
+      if ((details == null) && (ActivitySearchRequest.OwnerNetworkId != null) && (ActivitySearchRequest.OwnerNetworkId.Length > 0))
+      {
+        bool ownerNetworkIdValid = ActivitySearchRequest.OwnerNetworkId.Length == ProtocolHelper.NetworkIdentifierLength;
+        if (!ownerNetworkIdValid)
+        {
+          log.Debug("Invalid owner network ID length '{0}'.", ActivitySearchRequest.OwnerNetworkId.Length);
+          details = "ownerNetworkId";
+        }
+      }
+
+      if ((details == null) && (ActivitySearchRequest.Type != null))
+      {
+        bool typeValid = Encoding.UTF8.GetByteCount(ActivitySearchRequest.Type) <= ProxMessageBuilder.MaxActivitySearchTypeLengthBytes;
+        if (!typeValid)
+        {
+          log.Debug("Invalid type value length '{0}'.", ActivitySearchRequest.Type.Length);
+          details = "type";
+        }
+      }
+
+      if ((details == null) && ((ActivitySearchRequest.StartNotAfter != 0) || (ActivitySearchRequest.ExpirationNotBefore != 0)))
+      {
+        DateTime? startNotAfter = null;
+        DateTime? expirationNotBefore = null;
+
+        if (ActivitySearchRequest.StartNotAfter != 0)
+        {
+          startNotAfter = ProtocolHelper.UnixTimestampMsToDateTime(ActivitySearchRequest.StartNotAfter);
+          bool startNotAfterValid = startNotAfter != null;
+          if (!startNotAfterValid)
+          {
+            log.Debug("Start not after {0} is not a valid timestamp value.", ActivitySearchRequest.StartNotAfter);
+            details = "startNotAfter";
+          }
+        }
+
+        if ((details == null) && (ActivitySearchRequest.ExpirationNotBefore != 0))
+        {
+          expirationNotBefore = ProtocolHelper.UnixTimestampMsToDateTime(ActivitySearchRequest.ExpirationNotBefore);
+          bool expirationNotBeforeValid = expirationNotBefore != null;
+          if (!expirationNotBeforeValid)
+          {
+            log.Debug("Expiration not before {0} is not a valid timestamp value.", ActivitySearchRequest.ExpirationNotBefore);
+            details = "expirationNotBefore";
+          }
+          else if (ActivitySearchRequest.StartNotAfter != 0)
+          {
+            expirationNotBeforeValid = ActivitySearchRequest.StartNotAfter <= ActivitySearchRequest.ExpirationNotBefore;
+            if (!expirationNotBeforeValid)
+            {
+              log.Debug("Expiration not before {0} is smaller than start not after {1}.", ActivitySearchRequest.StartNotAfter, ActivitySearchRequest.ExpirationNotBefore);
+              details = "expirationNotBefore";
+            }
+          }
+        }
+      }
+
+      if ((details == null) && (ActivitySearchRequest.Latitude != GpsLocation.NoLocationLocationType))
+      {
+        GpsLocation locLat = new GpsLocation(ActivitySearchRequest.Latitude, 0);
+        GpsLocation locLong = new GpsLocation(0, ActivitySearchRequest.Longitude);
+        if (!locLat.IsValid())
+        {
+          log.Debug("Latitude '{0}' is not a valid GPS latitude value.", ActivitySearchRequest.Latitude);
+          details = "latitude";
+        }
+        else if (!locLong.IsValid())
+        {
+          log.Debug("Longitude '{0}' is not a valid GPS longitude value.", ActivitySearchRequest.Longitude);
+          details = "longitude";
+        }
+      }
+
+      if ((details == null) && (ActivitySearchRequest.Latitude != GpsLocation.NoLocationLocationType))
+      {
+        bool radiusValid = ActivitySearchRequest.Radius > 0;
+        if (!radiusValid)
+        {
+          log.Debug("Invalid radius value '{0}'.", ActivitySearchRequest.Radius);
+          details = "radius";
+        }
+      }
+
+      if ((details == null) && (ActivitySearchRequest.ExtraData != null))
+      {
+        bool validLength = (Encoding.UTF8.GetByteCount(ActivitySearchRequest.ExtraData) <= ProxMessageBuilder.MaxActivitySearchExtraDataLengthBytes);
+        bool extraDataValid = RegexTypeValidator.ValidateRegex(ActivitySearchRequest.ExtraData);
+        if (!validLength || !extraDataValid)
+        {
+          log.Debug("Invalid extraData regular expression filter.");
+          details = "extraData";
+        }
+      }
+
+      if (details == null)
+      {
+        res = true;
+      }
+      else ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, details);
+
+      log.Trace("(-):{0}", res);
+      return res;
+    }
+
+
+
+    /// <summary>
+    /// Performs a search request on a repository to retrieve the list of activities that match specific criteria.
+    /// </summary>
+    /// <param name="UnitOfWork">Unit of work instance.</param>
+    /// <param name="Repository">Primary or neighborhood activity repository, which is queried.</param>
+    /// <param name="MaxResults">Maximum number of results to retrieve.</param>
+    /// <param name="ActivityIdFilter">Activity ID or 0 if activity ID is not known. If non-zero, <paramref name="OwnerIdFilter"/> must not be null.</param>
+    /// <param name="OwnerIdFilter">Network identifier of the identity that created matching activities, or null if filtering by the owner is not required.</param>
+    /// <param name="TypeFilter">Wildcard filter for activity type, or empty string if activity type filtering is not required.</param>
+    /// <param name="StartNotAfterFilter">Maximal start time of activity, or null if start time filtering is not required.</param>
+    /// <param name="ExpirationNotBeforeFilter">Minimal expiration time of activity, or null if expiration time filtering is not required.</param>
+    /// <param name="LocationFilter">If not null, this value together with <paramref name="RadiusFilter"/> provide specification of target area, in which the identities has to have their location set. If null, GPS location filtering is not required.</param>
+    /// <param name="RadiusFilter">If <paramref name="LocationFilter"/> is not null, this is the target area radius with the centre in <paramref name="LocationFilter"/>.</param>
+    /// <param name="ExtraDataFilter">Regular expression filter for identity's extraData information, or empty string if extraData filtering is not required.</param>
+    /// <param name="TimeoutWatch">Stopwatch instance that is used to terminate the search query in case the execution takes too long. The stopwatch has to be started by the caller before calling this method.</param>
+    /// <returns>List of activity network informations of activities that match the specific criteria.</returns>
+    /// <remarks>In order to prevent DoS attacks, we require the search to complete within small period of time. 
+    /// One the allowed time is up, the search is terminated even if we do not have enough results yet and there 
+    /// is still a possibility to get more.</remarks>
+    private async Task<List<ActivityNetworkInformation>> ActivitySearchAsync<T>(UnitOfWork UnitOfWork, ActivityRepository<T> Repository, uint MaxResults, uint ActivityIdFilter, byte[] OwnerIdFilter, string TypeFilter, DateTime? StartNotAfterFilter, DateTime? ExpirationNotBeforeFilter, GpsLocation LocationFilter, uint RadiusFilter, string ExtraDataFilter, Stopwatch TimeoutWatch) where T : ActivityBase
+    {
+      log.Trace("(Repository:{0},MaxResults:{1},ActivityIdFilter:{2},OwnerIdFilter:'{3}',TypeFilter:'{4}',StartNotAfterFilter:{5},ExpirationNotBeforeFilter:{6},LocationFilter:[{7}],RadiusFilter:{8},ExtraDataFilter:'{9}')",
+        Repository, MaxResults, ActivityIdFilter, OwnerIdFilter != null ? OwnerIdFilter.ToHex() : "", TypeFilter, StartNotAfterFilter != null ? StartNotAfterFilter.Value.ToString("yyyy-MM-dd HH:mm:ss") : "null",
+        ExpirationNotBeforeFilter != null ? ExpirationNotBeforeFilter.Value.ToString("yyyy-MM-dd HH:mm:ss") : "null", LocationFilter, RadiusFilter, ExtraDataFilter);
+
+      List<ActivityNetworkInformation> res = new List<ActivityNetworkInformation>();
+
+      uint batchSize = Math.Max(ActivitySearchBatchSizeMin, (uint)(MaxResults * ActivitySearchBatchSizeMaxFactor));
+      uint offset = 0;
+
+      RegexEval extraDataEval = !string.IsNullOrEmpty(ExtraDataFilter) ? new RegexEval(ExtraDataFilter, ActivitySearchMaxExtraDataMatchingTimeSingleMs, ActivitySearchMaxExtraDataMatchingTimeTotalMs) : null;
+
+      long totalTimeMs = ActivitySearchMaxTimeMs;
+
+      bool isPrimary = Repository is PrimaryActivityRepository;
+
+      // List of network contact information to neighbors mapped by their network ID.
+      Dictionary<byte[], ServerContactInfo> neighborServerContactInfo = null;
+      if (!isPrimary)
+      {
+        neighborServerContactInfo = new Dictionary<byte[], ServerContactInfo>(StructuralEqualityComparer<byte[]>.Default);
+        List<Neighbor> neighbors = (await UnitOfWork.NeighborRepository.GetAsync(null, null, true)).ToList();
+        foreach (Neighbor neighbor in neighbors)
+        {
+          ServerContactInfo sci = new ServerContactInfo();
+          sci.NetworkId = ProtocolHelper.ByteArrayToByteString(neighbor.NeighborId);
+          sci.PrimaryPort = (uint)neighbor.PrimaryPort;
+          IPAddress ipAddr = null;
+          if (IPAddress.TryParse(neighbor.IpAddress, out ipAddr))
+          {
+            sci.IpAddress = ProtocolHelper.ByteArrayToByteString(ipAddr.GetAddressBytes());
+            neighborServerContactInfo.Add(neighbor.NeighborId, sci);
+          }
+          else log.Error("Neighbor ID '{0}' has invalid IP address '{1}'.", neighbor.NeighborId.ToHex(), neighbor.IpAddress);
+        }
+      }
+
+
+      bool done = false;
+      while (!done)
+      {
+        // Load result candidates from the database.
+        bool noMoreResults = false;
+        List<T> activities = null;
+        try
+        {
+          activities = await Repository.ActivitySearchAsync(offset, batchSize, ActivityIdFilter, OwnerIdFilter, TypeFilter, StartNotAfterFilter, ExpirationNotBeforeFilter, LocationFilter, RadiusFilter);
+          noMoreResults = (activities == null) || (activities.Count < batchSize);
+          if (noMoreResults)
+            log.Debug("Received {0}/{1} results from repository, no more results available.", activities != null ? activities.Count : 0, batchSize);
+        }
+        catch (Exception e)
+        {
+          log.Error("Exception occurred: {0}", e.ToString());
+          done = true;
+        }
+
+        if (!done)
+        {
+          if (activities != null)
+          {
+            int accepted = 0;
+            int filteredOutLocation = 0;
+            int filteredOutExtraData = 0;
+            foreach (T activity in activities)
+            {
+              // Terminate search if the time is up.
+              if (totalTimeMs - TimeoutWatch.ElapsedMilliseconds < 0)
+              {
+                log.Debug("Time for search query ({0} ms) is up, terminating query.", totalTimeMs);
+                done = true;
+                break;
+              }
+
+              // Filter out activities that do not match exact location filter and extraData filter, mind the precision information.
+              GpsLocation activityLocation = new GpsLocation(activity.LocationLatitude, activity.LocationLongitude);
+              if (LocationFilter != null)
+              {                
+                double distance = GpsLocation.DistanceBetween(LocationFilter, activityLocation) - (double)activity.PrecisionRadius;
+                bool withinArea = distance <= (double)RadiusFilter;
+                if (!withinArea)
+                {
+                  filteredOutLocation++;
+                  continue;
+                }
+              }
+
+              if (!string.IsNullOrEmpty(ExtraDataFilter))
+              {
+                bool match = extraDataEval.Matches(activity.ExtraData);
+                if (!match)
+                {
+                  filteredOutExtraData++;
+                  continue;
+                }
+              }
+
+              // Convert activity to search result format.
+              ActivityNetworkInformation ani = new ActivityNetworkInformation()
+              {
+                IsPrimary = isPrimary,
+                Version = ProtocolHelper.ByteArrayToByteString(activity.Version),
+                Id = activity.ActivityId,
+                OwnerPublicKey = ProtocolHelper.ByteArrayToByteString(activity.OwnerPublicKey),
+                ProfileServerContact = new ServerContactInfo()
+                {
+                  IpAddress = ProtocolHelper.ByteArrayToByteString(activity.OwnerProfileServerIpAddress),
+                  NetworkId = ProtocolHelper.ByteArrayToByteString(activity.OwnerProfileServerId),
+                  PrimaryPort = activity.OwnerProfileServerPrimaryPort,
+                },
+                Type = activity.Type != null ? activity.Type : "",
+                Latitude = activityLocation.GetLocationTypeLatitude(),
+                Longitude = activityLocation.GetLocationTypeLongitude(),
+                Precision = activity.PrecisionRadius,
+                StartTime = ProtocolHelper.DateTimeToUnixTimestampMs(activity.StartTime),
+                ExpirationTime = ProtocolHelper.DateTimeToUnixTimestampMs(activity.ExpirationTime),
+                ExtraData = activity.ExtraData != null ? activity.ExtraData : ""
+              };
+
+              if (isPrimary)
+              {
+                byte[] primaryServerId = (activity as NeighborActivity).PrimaryServerId;
+                ServerContactInfo serverContactInfo = null;
+                if (neighborServerContactInfo.TryGetValue(primaryServerId, out serverContactInfo))
+                {
+                  ani.PrimaryServer = serverContactInfo;
+                }
+                else
+                {
+                  // This can actually happen because the search operation is not atomic.
+                  // It means that neighbor was deleted before we finished the search operation.
+                  // In that case we simply do not include this activity in the result.
+                  continue;
+                }
+              }
+
+              accepted++;
+
+              res.Add(ani);
+              if (res.Count >= MaxResults)
+              {
+                log.Debug("Target number of results {0} has been reached.", MaxResults);
+                break;
+              }
+            }
+
+            log.Info("Total number of examined records is {0}, {1} of them have been accepted, {2} filtered out by location, {3} filtered out by extra data filter.",
+              accepted + filteredOutLocation + filteredOutExtraData, accepted, filteredOutLocation, filteredOutExtraData);
+          }
+
+          bool timedOut = totalTimeMs - TimeoutWatch.ElapsedMilliseconds < 0;
+          if (timedOut) log.Debug("Time for search query ({0} ms) is up, terminating query.", totalTimeMs);
+          done = noMoreResults || (res.Count >= MaxResults) || timedOut;
+          offset += batchSize;
+        }
+      }
+
+      log.Trace("(-):*.Count={0}", res.Count);
+      return res;
+    }
+
+
+    /// <summary>
+    /// Processes ActivitySearchPartRequest message from client.
+    /// <para>Loads cached search results and sends them to the client.</para>
+    /// </summary>
+    /// <param name="Client">Client that sent the request.</param>
+    /// <param name="RequestMessage">Full request message.</param>
+    /// <returns>Response message to be sent to the client.</returns>
+    public ProxProtocolMessage ProcessMessageActivitySearchPartRequest(IncomingClient Client, ProxProtocolMessage RequestMessage)
+    {
+      log.Trace("()");
+
+      ProxProtocolMessage res = null;
+      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.ConversationAny, out res))
+      {
+        log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+        return res;
+      }
+
+      ProxMessageBuilder messageBuilder = Client.MessageBuilder;
+      ActivitySearchPartRequest activitySearchPartRequest = RequestMessage.Request.ConversationRequest.ActivitySearchPart;
+
+      int cacheResultsCount;
+      if (Client.GetActivitySearchResultsInfo(out cacheResultsCount))
+      {
+        int maxRecordCount = ActivitySearchMaxResponseRecords;
+        bool recordIndexValid = (0 <= activitySearchPartRequest.RecordIndex) && (activitySearchPartRequest.RecordIndex < cacheResultsCount);
+        bool recordCountValid = (0 <= activitySearchPartRequest.RecordCount) && (activitySearchPartRequest.RecordCount <= maxRecordCount)
+          && (activitySearchPartRequest.RecordIndex + activitySearchPartRequest.RecordCount <= cacheResultsCount);
+
+        if (recordIndexValid && recordCountValid)
+        {
+          List<ActivityNetworkInformation> cachedResults = Client.GetActivitySearchResults((int)activitySearchPartRequest.RecordIndex, (int)activitySearchPartRequest.RecordCount);
+          if (cachedResults != null)
+          {
+            res = messageBuilder.CreateActivitySearchPartResponse(RequestMessage, activitySearchPartRequest.RecordIndex, activitySearchPartRequest.RecordCount, cachedResults);
+          }
+          else
+          {
+            log.Trace("Cached results are no longer available for client ID {0}.", Client.Id.ToHex());
+            res = messageBuilder.CreateErrorNotAvailableResponse(RequestMessage);
+          }
+        }
+        else
+        {
+          log.Trace("Required record index is {0}, required record count is {1}.", recordIndexValid ? "valid" : "invalid", recordCountValid ? "valid" : "invalid");
+          res = messageBuilder.CreateErrorInvalidValueResponse(RequestMessage, !recordIndexValid ? "recordIndex" : "recordCount");
+        }
+      }
+      else
+      {
+        log.Trace("No cached results are available for client ID {0}.", Client.Id.ToHex());
+        res = messageBuilder.CreateErrorNotAvailableResponse(RequestMessage);
+      }
+
+      log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+      return res;
+    }
+
   }
 }

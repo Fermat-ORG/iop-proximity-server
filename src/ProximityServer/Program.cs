@@ -79,9 +79,11 @@ namespace ProximityServer
           string text = File.ReadAllText(ExternalShutdownSignalFileName);
           if (text.Trim() == "1")
           {
-            File.WriteAllText(ExternalShutdownSignalFileName, "0");
-            log.Info("External shutdown signal detected.");
-            res = true;
+            if (ClearExternalShutdownSignal())
+            {
+              log.Info("External shutdown signal detected.");
+              res = true;
+            }
           }
         }
       }
@@ -90,5 +92,29 @@ namespace ProximityServer
       }
       return res;
     }
+
+
+
+    /// <summary>
+    /// Clears external shutdown signal.
+    /// </summary>
+    /// <returns>true if the function succeeded, false otherwise.</returns>
+    public static bool ClearExternalShutdownSignal()
+    {
+      log.Trace("()");
+      bool res = false;
+      try
+      {
+        File.WriteAllText(ExternalShutdownSignalFileName, "0");
+        res = true;
+      }
+      catch (Exception e)
+      {
+        log.Error("Exception occurred: {0}", e.ToString());
+      }
+      log.Trace("(-):{0}", res);
+      return res;
+    }
+
   }
 }

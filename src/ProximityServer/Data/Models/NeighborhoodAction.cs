@@ -98,7 +98,7 @@ namespace ProximityServer.Data.Models
     /// This is index - see ProximityServer.Data.Context.OnModelCreating.
     /// </remarks>
     [MaxLength(ProtocolHelper.NetworkIdentifierLength)]
-    public int? TargetActivityId { get; set; }
+    public uint TargetActivityId { get; set; }
 
     /// <summary>Network identifier of the activity creator.</summary>
     /// <remarks>

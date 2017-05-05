@@ -13,13 +13,15 @@ using Microsoft.EntityFrameworkCore.Storage;
 using IopCommon;
 using IopServerCore.Data;
 using IopServerCore.Kernel;
+using System.Runtime.CompilerServices;
+using System.Globalization;
 
 namespace ProximityServer.Data.Repositories
 {
   /// <summary>
   /// Repository of proximity server neighbors.
   /// </summary>
-  public class NeighborRepository : GenericRepository<Context, Neighbor>
+  public class NeighborRepository : GenericRepository<Neighbor>
   {
     /// <summary>Class logger.</summary>
     private static Logger log = new Logger("ProximityServer.Data.Repositories.NeighborRepository");
@@ -28,9 +30,10 @@ namespace ProximityServer.Data.Repositories
     /// <summary>
     /// Creates instance of the repository.
     /// </summary>
-    /// <param name="context">Database context.</param>
-    public NeighborRepository(Context context)
-      : base(context)
+    /// <param name="Context">Database context.</param>
+    /// <param name="UnitOfWork">Instance of unit of work that owns the repository.</param>
+    public NeighborRepository(Context Context, UnitOfWork UnitOfWork)
+      : base(Context, UnitOfWork)
     {
     }
 
@@ -38,12 +41,11 @@ namespace ProximityServer.Data.Repositories
     /// <summary>
     /// Deletes neighbor server, all its activities and all neighborhood actions for it from the database.
     /// </summary>
-    /// <param name="UnitOfWork">Unit of work instance.</param>
     /// <param name="NeighborId">Identifier of the neighbor server to delete.</param>
     /// <param name="ActionId">If there is a neighborhood action that should NOT be deleted, this is its ID, otherwise it is -1.</param>
     /// <param name="HoldingLocks">true if the caller is holding NeighborLock and NeighborhoodActionLock.</param>
     /// <returns>true if the function succeeds, false otherwise.</returns>
-    public async Task<bool> DeleteNeighbor(UnitOfWork UnitOfWork, byte[] NeighborId, int ActionId = -1, bool HoldingLocks = false)
+    public async Task<bool> DeleteNeighborAsync(byte[] NeighborId, int ActionId = -1, bool HoldingLocks = false)
     {
       log.Trace("(NeighborId:'{0}',ActionId:{1},HoldingLocks:{2})", NeighborId.ToHex(), ActionId, HoldingLocks);
 
@@ -53,14 +55,14 @@ namespace ProximityServer.Data.Repositories
 
       // Delete neighbor from the list of neighbors.
       DatabaseLock lockObject = UnitOfWork.NeighborLock;
-      if (!HoldingLocks) await UnitOfWork.AcquireLockAsync(lockObject);
+      if (!HoldingLocks) await unitOfWork.AcquireLockAsync(lockObject);
       try
       {
         Neighbor neighbor = (await GetAsync(n => n.NeighborId == NeighborId)).FirstOrDefault();
         if (neighbor != null)
         {
           Delete(neighbor);
-          await UnitOfWork.SaveThrowAsync();
+          await unitOfWork.SaveThrowAsync();
           log.Debug("Neighbor ID '{0}' deleted from database.", NeighborId.ToHex());
         }
         else
@@ -76,7 +78,7 @@ namespace ProximityServer.Data.Repositories
       {
         log.Error("Exception occurred: {0}", e.ToString());
       }
-      if (!HoldingLocks) UnitOfWork.ReleaseLock(lockObject);
+      if (!HoldingLocks) unitOfWork.ReleaseLock(lockObject);
 
       // Delete neighbor's activities from the database.
       if (success)
@@ -84,20 +86,20 @@ namespace ProximityServer.Data.Repositories
         success = false;
 
         // Disable change tracking for faster multiple deletes.
-        UnitOfWork.Context.ChangeTracker.AutoDetectChangesEnabled = false;
+        unitOfWork.Context.ChangeTracker.AutoDetectChangesEnabled = false;
 
         lockObject = UnitOfWork.NeighborActivityLock;
-        await UnitOfWork.AcquireLockAsync(lockObject);
+        await unitOfWork.AcquireLockAsync(lockObject);
         try
         {
-          List<NeighborActivity> activities = (await UnitOfWork.NeighborActivityRepository.GetAsync(i => i.PrimaryServerId == NeighborId)).ToList();
+          List<NeighborActivity> activities = (await unitOfWork.NeighborActivityRepository.GetAsync(i => i.PrimaryServerId == NeighborId)).ToList();
           if (activities.Count > 0)
           {
             log.Debug("There are {0} activities of removed neighbor ID '{1}'.", activities.Count, NeighborId.ToHex());
             foreach (NeighborActivity activity in activities)
-              UnitOfWork.NeighborActivityRepository.Delete(activity);
+              unitOfWork.NeighborActivityRepository.Delete(activity);
 
-            await UnitOfWork.SaveThrowAsync();
+            await unitOfWork.SaveThrowAsync();
             log.Debug("{0} identities hosted on neighbor ID '{1}' deleted from database.", activities.Count, NeighborId.ToHex());
           }
           else log.Trace("No profiles hosted on neighbor ID '{0}' found.", NeighborId.ToHex());
@@ -109,29 +111,29 @@ namespace ProximityServer.Data.Repositories
           log.Error("Exception occurred: {0}", e.ToString());
         }
 
-        UnitOfWork.ReleaseLock(lockObject);
+        unitOfWork.ReleaseLock(lockObject);
 
-        UnitOfWork.Context.ChangeTracker.AutoDetectChangesEnabled = true;
+        unitOfWork.Context.ChangeTracker.AutoDetectChangesEnabled = true;
       }
 
       if (success)
       {
         success = false;
         lockObject = UnitOfWork.NeighborhoodActionLock;
-        if (!HoldingLocks) await UnitOfWork.AcquireLockAsync(lockObject);
+        if (!HoldingLocks) await unitOfWork.AcquireLockAsync(lockObject);
         try
         {
           // Do not delete the current action, it will be deleted just after this method finishes.
-          List<NeighborhoodAction> actions = UnitOfWork.NeighborhoodActionRepository.Get(a => (a.ServerId == NeighborId) && (a.Id != ActionId)).ToList();
+          List<NeighborhoodAction> actions = unitOfWork.NeighborhoodActionRepository.Get(a => (a.ServerId == NeighborId) && (a.Id != ActionId)).ToList();
           if (actions.Count > 0)
           {
             foreach (NeighborhoodAction action in actions)
             {
               log.Debug("Action ID {0}, type {1}, serverId '{2}' will be removed from the database.", action.Id, action.Type, NeighborId.ToHex());
-              UnitOfWork.NeighborhoodActionRepository.Delete(action);
+              unitOfWork.NeighborhoodActionRepository.Delete(action);
             }
 
-            await UnitOfWork.SaveThrowAsync();
+            await unitOfWork.SaveThrowAsync();
           }
           else log.Debug("No neighborhood actions for neighbor ID '{0}' found.", NeighborId.ToHex());
 
@@ -142,7 +144,7 @@ namespace ProximityServer.Data.Repositories
           log.Error("Exception occurred: {0}", e.ToString());
         }
 
-        if (!HoldingLocks) UnitOfWork.ReleaseLock(lockObject);
+        if (!HoldingLocks) unitOfWork.ReleaseLock(lockObject);
       }
 
       res = success;
@@ -157,17 +159,16 @@ namespace ProximityServer.Data.Repositories
     /// <summary>
     /// Sets NeighborPort of a neighbor to null.
     /// </summary>
-    /// <param name="UnitOfWork">Unit of work instance.</param>
     /// <param name="NeighborId">Identifier of the neighbor server.</param>
     /// <returns>true if the function succeeds, false otherwise.</returns>
-    public async Task<bool> ResetNeighborPort(UnitOfWork UnitOfWork, byte[] NeighborId)
+    public async Task<bool> ResetNeighborPortAsync(byte[] NeighborId)
     {
       log.Trace("(NeighborId:'{0}')", NeighborId.ToHex());
 
       bool res = false;
       bool dbSuccess = false;
       DatabaseLock lockObject = UnitOfWork.FollowerLock;
-      using (IDbContextTransaction transaction = await UnitOfWork.BeginTransactionWithLockAsync(lockObject))
+      using (IDbContextTransaction transaction = await unitOfWork.BeginTransactionWithLockAsync(lockObject))
       {
         try
         {
@@ -177,7 +178,7 @@ namespace ProximityServer.Data.Repositories
             neighbor.NeighborPort = null;
             Update(neighbor);
 
-            await UnitOfWork.SaveThrowAsync();
+            await unitOfWork.SaveThrowAsync();
             transaction.Commit();
             res = true;
           }
@@ -193,10 +194,64 @@ namespace ProximityServer.Data.Repositories
         if (!dbSuccess)
         {
           log.Warn("Rolling back transaction.");
-          UnitOfWork.SafeTransactionRollback(transaction);
+          unitOfWork.SafeTransactionRollback(transaction);
         }
 
-        UnitOfWork.ReleaseLock(lockObject);
+        unitOfWork.ReleaseLock(lockObject);
+      }
+
+      log.Trace("(-):{0}", res);
+      return res;
+    }
+
+
+    /// <summary>
+    /// Checks whether the server is the nearest server to a given location.
+    /// </summary>
+    /// <param name="TargetLocation">Target GPS location.</param>
+    /// <param name="IgnoreServerIds">List of network IDs that should be ignored.</param>
+    /// <param name="NearestServerId">If the result is false, this is filled with network identifier of a neighbor server that is nearest to the target location.</param>
+    /// <param name="Threshold">Optionally, threshold value which allows the function to return true even if there exists a neighbor server that is actually closer 
+    /// to the target location, but it is only slightly closer than the proximity server.</param>
+    /// <returns>true if the server is the nearest proximity server to the target location, false if the server knows at least one other server that is closer
+    /// or if the function fails.</returns>
+    public async Task<bool> IsServerNearestToLocationAsync(GpsLocation TargetLocation, List<byte[]> IgnoreServerIds, StrongBox<byte[]> NearestServerId, double? Threshold = null)
+    {
+      log.Trace("(TargetLocation:[{0}],IgnoreServerIds:'{1}',Threshold:{2})", TargetLocation, string.Join(",", IgnoreServerIds), Threshold != null ? Threshold.Value.ToString(CultureInfo.InvariantCulture) : "null");
+
+      bool res = true;
+
+      LocationBasedNetwork loc = (LocationBasedNetwork)Base.ComponentDictionary[LocationBasedNetwork.ComponentName];
+      GpsLocation myLocation = loc.Location;
+      double myDistance = TargetLocation.DistanceTo(myLocation);
+      log.Trace("Server's distance to the activity location is {0} metres.", myDistance.ToString(CultureInfo.InvariantCulture));
+
+      double thresholdCoef = 1;
+      if (Threshold != null) thresholdCoef += Threshold.Value;
+
+      try
+      {
+        List<Neighbor> allNeighbors = (await GetAsync(null, null, true)).ToList();
+        foreach (Neighbor neighbor in allNeighbors)
+        {
+          GpsLocation neighborLocation = new GpsLocation(neighbor.LocationLatitude, neighbor.LocationLongitude);
+          double neighborDistance = neighborLocation.DistanceTo(myLocation);
+          double thresholdNeighborDistance = neighborDistance * thresholdCoef;
+          bool serverNearestWithThreshold = myDistance <= thresholdNeighborDistance;
+          if (!serverNearestWithThreshold)
+          {
+            NearestServerId.Value = neighbor.NeighborId;
+            log.Debug("Server network ID '{0}', GPS location [{1}] is closer (distance {2} m, {3} m with threshold) to the target location [{4}] than the current server location [{5}] (distance {6} m).", 
+              neighbor.NeighborId.ToHex(), neighborLocation, neighborDistance.ToString(CultureInfo.InvariantCulture), thresholdNeighborDistance.ToString(CultureInfo.InvariantCulture), TargetLocation, 
+              myLocation, myDistance.ToString(CultureInfo.InvariantCulture));
+            res = false;
+            break;
+          }
+        }
+      }
+      catch (Exception e)
+      {
+        log.Error("Exception occurred: {0}", e.ToString());
       }
 
       log.Trace("(-):{0}", res);

@@ -16,6 +16,7 @@ using System.Threading.Tasks;
 using IopCommon;
 using IopServerCore.Network;
 using Google.Protobuf;
+using Iop.Shared;
 
 namespace ProximityServer.Network
 {
@@ -404,7 +405,7 @@ namespace ProximityServer.Network
       log.Trace("(-):{0}", res);
       return res;
     }
-    
+    */
 
 
     /// <summary>
@@ -412,7 +413,7 @@ namespace ProximityServer.Network
     /// </summary>
     /// <param name="RequestMessage">Request message to send.</param>
     /// <returns>true if the function succeeds, false otherwise.</returns>
-    public async Task<bool> SendNeighborhoodSharedProfileUpdate(ProxProtocolMessage RequestMessage)
+    public async Task<bool> SendNeighborhoodSharedProfileUpdateAsync(ProxProtocolMessage RequestMessage)
     {
       log.Trace("()");
 
@@ -437,7 +438,7 @@ namespace ProximityServer.Network
       return res;
     }
 
-
+    /*
 
 
     /// <summary>

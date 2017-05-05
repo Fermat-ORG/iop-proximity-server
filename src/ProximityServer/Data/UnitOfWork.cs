@@ -38,7 +38,7 @@ namespace ProximityServer.Data
       get
       {
         if (settingsRepository == null)
-          settingsRepository = new SettingsRepository(Context);
+          settingsRepository = new SettingsRepository(Context, this);
 
         return settingsRepository;
       }
@@ -52,7 +52,7 @@ namespace ProximityServer.Data
       get
       {
         if (primaryActivityRepository == null)
-          primaryActivityRepository = new PrimaryActivityRepository(Context);
+          primaryActivityRepository = new PrimaryActivityRepository(Context, this);
 
         return primaryActivityRepository;
       }
@@ -66,7 +66,7 @@ namespace ProximityServer.Data
       get
       {
         if (neighborActivityRepository == null)
-          neighborActivityRepository = new NeighborActivityRepository(Context);
+          neighborActivityRepository = new NeighborActivityRepository(Context, this);
 
         return neighborActivityRepository;
       }
@@ -81,7 +81,7 @@ namespace ProximityServer.Data
       get
       {
         if (neighborRepository == null)
-          neighborRepository = new NeighborRepository(Context);
+          neighborRepository = new NeighborRepository(Context, this);
 
         return neighborRepository;
       }
@@ -96,7 +96,7 @@ namespace ProximityServer.Data
       get
       {
         if (neighborhoodActionRepository == null)
-          neighborhoodActionRepository = new NeighborhoodActionRepository(Context);
+          neighborhoodActionRepository = new NeighborhoodActionRepository(Context, this);
 
         return neighborhoodActionRepository;
       }
@@ -110,7 +110,7 @@ namespace ProximityServer.Data
       get
       {
         if (followerRepository == null)
-          followerRepository = new FollowerRepository(Context);
+          followerRepository = new FollowerRepository(Context, this);
 
         return followerRepository;
       }

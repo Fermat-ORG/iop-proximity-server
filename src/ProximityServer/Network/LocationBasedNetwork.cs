@@ -43,6 +43,10 @@ namespace ProximityServer.Network
     /// <summary>Lock object to protect write access to locServerInitialized.</summary>
     private object locServerInitializedLock = new object();
 
+    /// <summary>GPS location of this server received from local LOC node.</summary>
+    private GpsLocation location;
+    /// <summary>GPS location of this server received from local LOC node.</summary>
+    public GpsLocation Location { get { return location; } }
 
     /// <summary>
     /// Initializes the component.
@@ -166,8 +170,11 @@ namespace ProximityServer.Network
           if (await client.ConnectAsync())
           {
             // Announce our primary server interface to LOC.
-            if (await client.RegisterPrimaryServerRoleAsync(Config.Configuration.ServerRoles.GetRolePort((uint)ServerRole.Primary)))
+            GpsLocation serverLocation = new GpsLocation(0, 0);
+            if (await client.RegisterPrimaryServerRoleAsync(Config.Configuration.ServerRoles.GetRolePort((uint)ServerRole.Primary), serverLocation))
             {
+              this.location = serverLocation;
+
               // Ask LOC server about initial set of neighborhood nodes.
               if (await GetNeighborhoodInformationAsync())
               {
