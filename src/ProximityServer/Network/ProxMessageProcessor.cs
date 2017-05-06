@@ -159,6 +159,23 @@ namespace ProximityServer.Network
                         responseMessage = ProcessMessageActivitySearchPartRequest(client, incomingMessage);
                         break;
 
+                      case ConversationRequest.RequestTypeOneofCase.StartNeighborhoodInitialization:
+                        responseMessage = await ProcessMessageStartNeighborhoodInitializationRequestAsync(client, incomingMessage);
+                        break;
+
+                      case ConversationRequest.RequestTypeOneofCase.FinishNeighborhoodInitialization:
+                        responseMessage = ProcessMessageFinishNeighborhoodInitializationRequest(client, incomingMessage);
+                        break;
+
+                      case ConversationRequest.RequestTypeOneofCase.NeighborhoodSharedActivityUpdate:
+                        responseMessage = await ProcessMessageNeighborhoodSharedActivityUpdateRequestAsync(client, incomingMessage);
+                        break;
+
+                      case ConversationRequest.RequestTypeOneofCase.StopNeighborhoodUpdates:
+                        responseMessage = await ProcessMessageStopNeighborhoodUpdatesRequestAsync(client, incomingMessage);
+                        break;
+
+
                       default:
                         log.Warn("Invalid request type '{0}'.", conversationRequest.RequestTypeCase);
                         // Connection will be closed in ReceiveMessageLoop.
@@ -253,6 +270,14 @@ namespace ProximityServer.Network
                         ConversationRequest conversationRequest = request.ConversationRequest;
                         switch (conversationRequest.RequestTypeCase)
                         {
+                          case ConversationRequest.RequestTypeOneofCase.NeighborhoodSharedActivityUpdate:
+                            res = await ProcessMessageNeighborhoodSharedActivityUpdateResponseAsync(client, incomingMessage, unfinishedRequest);
+                            break;
+
+                          case ConversationRequest.RequestTypeOneofCase.FinishNeighborhoodInitialization:
+                            res = await ProcessMessageFinishNeighborhoodInitializationResponseAsync(client, incomingMessage, unfinishedRequest);
+                            break;
+
                           default:
                             log.Warn("Invalid type '{0}' of the corresponding request.", conversationRequest.RequestTypeCase);
                             // Connection will be closed in ReceiveMessageLoop.
@@ -1288,7 +1313,7 @@ namespace ProximityServer.Network
             {
               bool localServerOnly = true;
               bool error = false;
-              // If possible and needed we try to find more results among identities hosted in this profile server's neighborhood.
+              // If possible and needed we try to find more results among activities of this proximity server's neighbors.
               if (!activitySearchRequest.IncludePrimaryOnly && (searchResultsLocal.Count < maxResults))
               {
                 localServerOnly = false;
@@ -1765,5 +1790,1308 @@ namespace ProximityServer.Network
       return res;
     }
 
+
+    /// <summary>
+    /// Processes StartNeighborhoodInitializationRequest message from client.
+    /// <para>If the server is not overloaded it accepts the neighborhood initialization request, 
+    /// adds the client to the list of server for which the proximity server acts as a neighbor,
+    /// and starts sharing its activity database.</para>
+    /// </summary>
+    /// <param name="Client">Client that sent the request.</param>
+    /// <param name="RequestMessage">Full request message.</param>
+    /// <returns>Response message to be sent to the client, or null if no response is to be sent by the calling function.</returns>
+    public async Task<ProxProtocolMessage> ProcessMessageStartNeighborhoodInitializationRequestAsync(IncomingClient Client, ProxProtocolMessage RequestMessage)
+    {
+      log.Trace("()");
+
+      ProxProtocolMessage res = null;
+      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Neighbor, ClientConversationStatus.Verified, out res))
+      {
+        log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+        return res;
+      }
+
+      ProxMessageBuilder messageBuilder = Client.MessageBuilder;
+      StartNeighborhoodInitializationRequest startNeighborhoodInitializationRequest = RequestMessage.Request.ConversationRequest.StartNeighborhoodInitialization;
+      int primaryPort = (int)startNeighborhoodInitializationRequest.PrimaryPort;
+      int neighborPort = (int)startNeighborhoodInitializationRequest.NeighborPort;
+      byte[] ipAddressBytes = startNeighborhoodInitializationRequest.IpAddress.ToByteArray();
+      byte[] followerId = Client.IdentityId;
+
+      IPAddress followerIpAddress = IPAddressExtensions.IpFromBytes(ipAddressBytes);
+
+      res = messageBuilder.CreateErrorInternalResponse(RequestMessage);
+      bool success = false;
+
+      NeighborhoodInitializationProcessContext nipContext = null;
+
+      Config config = (Config)Base.ComponentDictionary[ConfigBase.ComponentName];
+      bool primaryPortValid = (0 < primaryPort) && (primaryPort <= 65535);
+      bool neighborPortValid = (0 < neighborPort) && (neighborPort <= 65535);
+
+      bool ipAddressValid = (followerIpAddress != null) && (config.TestModeEnabled || !followerIpAddress.IsReservedOrLocal());
+
+      if (primaryPortValid && neighborPortValid && ipAddressValid)
+      {
+        using (UnitOfWork unitOfWork = new UnitOfWork())
+        {
+          int blockActionId = await unitOfWork.NeighborhoodActionRepository.InstallInitializationProcessInProgressAsync(followerId);
+          if (blockActionId != -1)
+          {
+            DatabaseLock[] lockObjects = new DatabaseLock[] { UnitOfWork.PrimaryActivityLock, UnitOfWork.FollowerLock };
+            using (IDbContextTransaction transaction = await unitOfWork.BeginTransactionWithLockAsync(lockObjects))
+            {
+              try
+              {
+                int followerCount = await unitOfWork.FollowerRepository.CountAsync();
+                if (followerCount < Config.Configuration.MaxFollowerServersCount)
+                {
+                  int neighborhoodInitializationsInProgress = await unitOfWork.FollowerRepository.CountAsync(f => f.LastRefreshTime == null);
+                  if (neighborhoodInitializationsInProgress < Config.Configuration.NeighborhoodInitializationParallelism)
+                  {
+                    Follower existingFollower = (await unitOfWork.FollowerRepository.GetAsync(f => f.FollowerId == followerId)).FirstOrDefault();
+                    if (existingFollower == null)
+                    {
+                      // Take snapshot of all our identities.
+                      byte[] invalidVersion = SemVer.Invalid.ToByteArray();
+                      List<PrimaryActivity> allPrimaryActivities = (await unitOfWork.PrimaryActivityRepository.GetAsync(null, null, true)).ToList();
+
+                      // Create new follower.
+                      Follower follower = new Follower()
+                      {
+                        FollowerId = followerId,
+                        IpAddress = followerIpAddress.ToString(),
+                        PrimaryPort = primaryPort,
+                        NeighborPort = neighborPort,
+                        LastRefreshTime = null
+                      };
+
+                      await unitOfWork.FollowerRepository.InsertAsync(follower);
+                      await unitOfWork.SaveThrowAsync();
+                      transaction.Commit();
+                      success = true;
+
+                      // Set the client to be in the middle of neighbor initialization process.
+                      Client.NeighborhoodInitializationProcessInProgress = true;
+                      nipContext = new NeighborhoodInitializationProcessContext()
+                      {
+                        PrimaryActivities = allPrimaryActivities,
+                        ActivitiesDone = 0
+                      };
+                    }
+                    else
+                    {
+                      log.Warn("Follower ID '{0}' already exists in the database.", followerId.ToHex());
+                      res = messageBuilder.CreateErrorAlreadyExistsResponse(RequestMessage);
+                    }
+                  }
+                  else
+                  {
+                    log.Warn("Maximal number of neighborhood initialization processes {0} in progress has been reached.", Config.Configuration.NeighborhoodInitializationParallelism);
+                    res = messageBuilder.CreateErrorBusyResponse(RequestMessage);
+                  }
+                }
+                else
+                {
+                  log.Warn("Maximal number of follower servers {0} has been reached already. Will not accept another follower.", Config.Configuration.MaxFollowerServersCount);
+                  res = messageBuilder.CreateErrorRejectedResponse(RequestMessage);
+                }
+              }
+              catch (Exception e)
+              {
+                log.Error("Exception occurred: {0}", e.ToString());
+              }
+
+              if (!success)
+              {
+                log.Warn("Rolling back transaction.");
+                unitOfWork.SafeTransactionRollback(transaction);
+              }
+
+              unitOfWork.ReleaseLock(lockObjects);
+            }
+
+            if (!success)
+            {
+              // It may happen that due to power failure, this will not get executed but when the server runs next time, 
+              // Data.Database.DeleteInvalidNeighborhoodActions will be executed during the startup and will delete the blocking action.
+              if (!await unitOfWork.NeighborhoodActionRepository.UninstallInitializationProcessInProgressAsync(blockActionId))
+                log.Error("Unable to uninstall blocking neighborhood action ID {0} for follower ID '{1}'.", blockActionId, followerId.ToHex());
+            }
+          }
+          else log.Error("Unable to install blocking neighborhood action for follower ID '{0}'.", followerId.ToHex());
+        }
+      }
+      else
+      {
+        if (!primaryPortValid) res = messageBuilder.CreateErrorInvalidValueResponse(RequestMessage, "primaryPort");
+        else if (!neighborPortValid) res = messageBuilder.CreateErrorInvalidValueResponse(RequestMessage, "neighborPort");
+        else res = messageBuilder.CreateErrorInvalidValueResponse(RequestMessage, "ipAddress");
+      }
+
+      if (success)
+      {
+        log.Info("New follower ID '{0}' added to the database.", followerId.ToHex());
+
+        ProxProtocolMessage responseMessage = messageBuilder.CreateStartNeighborhoodInitializationResponse(RequestMessage);
+        if (await Client.SendMessageAsync(responseMessage))
+        {
+          if (nipContext.PrimaryActivities.Count > 0)
+          {
+            log.Trace("Sending first batch of our {0} primary activities.", nipContext.PrimaryActivities.Count);
+            ProxProtocolMessage updateMessage = BuildNeighborhoodSharedActivityUpdateRequest(Client, nipContext);
+            if (!await Client.SendMessageAndSaveUnfinishedRequestAsync(updateMessage, nipContext))
+            {
+              log.Warn("Unable to send first update message to the client.");
+              Client.ForceDisconnect = true;
+            }
+          }
+          else
+          {
+            log.Trace("No hosted identities to be shared, finishing neighborhood initialization process.");
+
+            // If the proximity server has no primary activities, simply finish initialization process.
+            ProxProtocolMessage finishMessage = messageBuilder.CreateFinishNeighborhoodInitializationRequest();
+            if (!await Client.SendMessageAndSaveUnfinishedRequestAsync(finishMessage, null))
+            {
+              log.Warn("Unable to send finish message to the client.");
+              Client.ForceDisconnect = true;
+            }
+          }
+        }
+        else
+        {
+          log.Warn("Unable to send reponse message to the client.");
+          Client.ForceDisconnect = true;
+        }
+
+        res = null;
+      }
+
+      if (res != null) log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+      else log.Trace("(-):null");
+      return res;
+    }
+
+
+    /// <summary>
+    /// Builds an update message for neighborhood initialization process.
+    /// <para>An update message is built in a way that as many as possible consecutive activities from the list 
+    /// are being put into the message.</para>
+    /// </summary>
+    /// <param name="Client">Client for which the message is to be prepared.</param>
+    /// <param name="Context">Context describing the status of the initialization process.</param>
+    /// <returns>Upadate request message that is ready to be sent to the client.</returns>
+    public ProxProtocolMessage BuildNeighborhoodSharedActivityUpdateRequest(IncomingClient Client, NeighborhoodInitializationProcessContext Context)
+    {
+      log.Trace("()");
+
+      ProxProtocolMessage res = Client.MessageBuilder.CreateNeighborhoodSharedActivityUpdateRequest();
+
+      // We want to send as many items as possible in one message in order to minimize the number of messages 
+      // there is some overhead when the message put into the final MessageWithHeader structure, 
+      // so to be safe we just use 32 bytes less then the maximum.
+      int messageSizeLimit = ProtocolHelper.MaxMessageSize - 32;
+
+      int index = Context.ActivitiesDone;
+      List<PrimaryActivity> activities = Context.PrimaryActivities;
+      log.Trace("Starting with identity index {0}, total identities number is {1}.", index, activities.Count);
+      while (index < activities.Count)
+      {
+        PrimaryActivity activity = activities[index];
+        GpsLocation location = activity.GetLocation();
+        SharedActivityUpdateItem updateItem = new SharedActivityUpdateItem()
+        {
+          Add = new SharedActivityAddItem()
+          {
+            Version = ProtocolHelper.ByteArrayToByteString(activity.Version),
+            Id = activity.ActivityId,
+            OwnerPublicKey = ProtocolHelper.ByteArrayToByteString(activity.OwnerPublicKey),
+            ProfileServerContact = new ServerContactInfo()
+            {
+              IpAddress = ProtocolHelper.ByteArrayToByteString(activity.OwnerProfileServerIpAddress),
+              NetworkId = ProtocolHelper.ByteArrayToByteString(activity.OwnerProfileServerId),
+              PrimaryPort = activity.OwnerProfileServerPrimaryPort,
+            },
+            Type = activity.Type,
+            Latitude = location.GetLocationTypeLatitude(),
+            Longitude = location.GetLocationTypeLongitude(),
+            Precision = activity.PrecisionRadius,
+            StartTime = ProtocolHelper.DateTimeToUnixTimestampMs(activity.StartTime),
+            ExpirationTime = ProtocolHelper.DateTimeToUnixTimestampMs(activity.ExpirationTime),
+            ExtraData = activity.ExtraData
+          }
+        };
+
+        res.Request.ConversationRequest.NeighborhoodSharedActivityUpdate.Items.Add(updateItem);
+        int newSize = res.Message.CalculateSize();
+
+        log.Trace("Index {0}, message size is {1} bytes, limit is {2} bytes.", index, newSize, messageSizeLimit);
+        if (newSize > messageSizeLimit)
+        {
+          // We have reached the limit, remove the last item and send the message.
+          res.Request.ConversationRequest.NeighborhoodSharedActivityUpdate.Items.RemoveAt(res.Request.ConversationRequest.NeighborhoodSharedActivityUpdate.Items.Count - 1);
+          break;
+        }
+
+        index++;
+      }
+
+      Context.ActivitiesDone += res.Request.ConversationRequest.NeighborhoodSharedActivityUpdate.Items.Count;
+      log.Debug("{0} update items inserted to the message. Already processed {1}/{2} activities.",
+        res.Request.ConversationRequest.NeighborhoodSharedActivityUpdate.Items.Count, Context.ActivitiesDone, Context.PrimaryActivities.Count);
+
+      log.Trace("(-)");
+      return res;
+    }
+
+
+    /// <summary>
+    /// Processes NeighborhoodSharedActivityUpdateResponse message from client.
+    /// <para>This response is received when the follower server accepted a batch of activities and is ready to receive next batch.</para>
+    /// </summary>
+    /// <param name="Client">Client that sent the response.</param>
+    /// <param name="ResponseMessage">Full response message.</param>
+    /// <param name="Request">Unfinished request message that corresponds to the response message.</param>
+    /// <returns>true if the connection to the client that sent the response should remain open, false if the client should be disconnected.</returns>
+    public async Task<bool> ProcessMessageNeighborhoodSharedActivityUpdateResponseAsync(IncomingClient Client, ProxProtocolMessage ResponseMessage, UnfinishedRequest Request)
+    {
+      log.Trace("()");
+
+      bool res = false;
+
+      ProxMessageBuilder messageBuilder = Client.MessageBuilder;
+      if (Client.NeighborhoodInitializationProcessInProgress)
+      {
+        if (ResponseMessage.Response.Status == Status.Ok)
+        {
+          NeighborhoodInitializationProcessContext nipContext = (NeighborhoodInitializationProcessContext)Request.Context;
+          if (nipContext.ActivitiesDone < nipContext.PrimaryActivities.Count)
+          {
+            ProxProtocolMessage updateMessage = BuildNeighborhoodSharedActivityUpdateRequest(Client, nipContext);
+            if (await Client.SendMessageAndSaveUnfinishedRequestAsync(updateMessage, nipContext))
+            {
+              res = true;
+            }
+            else log.Warn("Unable to send update message to the client.");
+          }
+          else
+          {
+            // If all hosted identities were sent, finish initialization process.
+            ProxProtocolMessage finishMessage = messageBuilder.CreateFinishNeighborhoodInitializationRequest();
+            if (await Client.SendMessageAndSaveUnfinishedRequestAsync(finishMessage, null))
+            {
+              res = true;
+            }
+            else log.Warn("Unable to send finish message to the client.");
+          }
+        }
+        else
+        {
+          // We are in the middle of the neighborhood initialization process, but the follower did not accepted our message with activities.
+          // We should disconnect from the follower and delete it from our follower database.
+          // If it wants to retry later, it can.
+          // Follower will be deleted automatically as the connection terminates in IncomingClient.HandleDisconnect.
+          log.Warn("Client ID '{0}' is follower in the middle of the neighborhood initialization process, but it did not accept our activities (error code {1}), so we will disconnect it and delete it from our database.", Client.IdentityId.ToHex(), ResponseMessage.Response.Status);
+        }
+      }
+      else log.Error("Client ID '{0}' does not have neighborhood initialization process in progress, client will be disconnected.", Client.IdentityId.ToHex());
+
+      log.Trace("(-):{0}", res);
+      return res;
+    }
+
+
+    /// <summary>
+    /// Processes FinishNeighborhoodInitializationRequest message from client.
+    /// <para>This message should never come here from a protocol conforming client,
+    /// hence the only thing we can do is return an error.</para>
+    /// </summary>
+    /// <param name="Client">Client that sent the request.</param>
+    /// <param name="RequestMessage">Full request message.</param>
+    /// <returns>Response message to be sent to the client.</returns>
+    public ProxProtocolMessage ProcessMessageFinishNeighborhoodInitializationRequest(IncomingClient Client, ProxProtocolMessage RequestMessage)
+    {
+      log.Trace("()");
+
+      ProxProtocolMessage res = null;
+      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Neighbor, ClientConversationStatus.Verified, out res))
+      {
+        log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+        return res;
+      }
+
+      ProxMessageBuilder messageBuilder = Client.MessageBuilder;
+      res = messageBuilder.CreateErrorRejectedResponse(RequestMessage);
+
+      log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+      return res;
+    } 
+
+
+
+    /// <summary>
+    /// Processes NeighborhoodSharedActivityUpdateRequest message from client.
+    /// <para>Processes a shared activity update from a neighbor.</para>
+    /// </summary>
+    /// <param name="Client">Client that sent the request.</param>
+    /// <param name="RequestMessage">Full request message.</param>
+    /// <returns>Response message to be sent to the client.</returns>
+    public async Task<ProxProtocolMessage> ProcessMessageNeighborhoodSharedActivityUpdateRequestAsync(IncomingClient Client, ProxProtocolMessage RequestMessage)
+    {
+      log.Trace("()");
+
+      ProxProtocolMessage res = null;
+      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Neighbor, ClientConversationStatus.Verified, out res))
+      {
+        log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+        return res;
+      }
+
+      ProxMessageBuilder messageBuilder = Client.MessageBuilder;
+      NeighborhoodSharedActivityUpdateRequest neighborhoodSharedActivityUpdateRequest = RequestMessage.Request.ConversationRequest.NeighborhoodSharedActivityUpdate;
+
+      bool error = false;
+      byte[] neighborId = Client.IdentityId;
+
+      int sharedActivitiesCount = 0;
+      // First, we verify that the client is our neighbor and how many activities it shares with us.
+      using (UnitOfWork unitOfWork = new UnitOfWork())
+      {
+        Neighbor neighbor = (await unitOfWork.NeighborRepository.GetAsync(n => n.NeighborId == neighborId)).FirstOrDefault();
+        if (neighbor == null)
+        {
+          log.Warn("Share activity update request came from client ID '{0}', who is not our neighbor.", neighborId.ToHex());
+          res = messageBuilder.CreateErrorRejectedResponse(RequestMessage);
+          error = true;
+        }
+        else if (neighbor.LastRefreshTime == null)
+        {
+          log.Warn("Share activity update request came from client ID '{0}', who is our neighbor, but we have not finished the initialization process with it yet.", neighborId.ToHex());
+          res = messageBuilder.CreateErrorRejectedResponse(RequestMessage);
+          error = true;
+        }
+        else
+        {
+          sharedActivitiesCount = neighbor.SharedActivities;
+          log.Trace("Neighbor ID '{0}' currently shares {1} activities with the proximity server.", neighborId.ToHex(), sharedActivitiesCount);
+        }
+      }
+
+      if (error)
+      {
+        log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+        return res;
+      }
+
+
+      // Second, we do a validation of all items without touching a database.
+
+      // itemIndex will hold the index of the first item that is invalid.
+      // If it reaches the number of items, all items are valid.
+      int itemIndex = 0;
+
+      // List of string representation of full ID (owner network IDs + activity ID) of activities that were validated in this batch already.
+      // It is used to find multiple updates within the batch that work with the same activity, which is not allowed.
+      HashSet<string> usedActivitiesIdsInBatch = new HashSet<string>(StringComparer.Ordinal);
+
+      while (itemIndex < neighborhoodSharedActivityUpdateRequest.Items.Count)
+      {
+        SharedActivityUpdateItem updateItem = neighborhoodSharedActivityUpdateRequest.Items[itemIndex];
+        ProxProtocolMessage errorResponse;
+        if (ValidateSharedActivityUpdateItem(updateItem, itemIndex, sharedActivitiesCount, usedActivitiesIdsInBatch, Client.MessageBuilder, RequestMessage, out errorResponse))
+        {
+          // Modify sharedActivitiesCount to reflect the item we just validated.
+          // In case of delete operation, we have not checked the existence yet, 
+          // but it will be checked prior any problem could be caused by that.
+          if (updateItem.ActionTypeCase == SharedActivityUpdateItem.ActionTypeOneofCase.Add) sharedActivitiesCount++;
+          else if (updateItem.ActionTypeCase == SharedActivityUpdateItem.ActionTypeOneofCase.Delete) sharedActivitiesCount--;
+        }
+        else
+        {
+          res = errorResponse;
+          break;
+        }
+
+        itemIndex++;
+      }
+
+      log.Debug("{0}/{1} update items passed validation.", itemIndex, neighborhoodSharedActivityUpdateRequest.Items.Count);
+
+
+      // Now we save all valid items up to the first invalid (or all if all are valid).
+      // But if we detect duplicity of identity with Add operation, or we can not find identity 
+      // with Change or Delete action, we end earlier.
+      // We will process the data in batches of max 100 items, not to occupy the database locks for too long.
+      log.Trace("Saving {0} valid profiles changes.", itemIndex);
+
+      // Index of the update item currently being processed.
+      int index = 0;
+
+      using (UnitOfWork unitOfWork = new UnitOfWork())
+      {
+        // Batch number just for logging purposes.
+        int batchNumber = 1;
+        while (index < itemIndex)
+        {
+          log.Trace("Processing batch number {0}, which starts with item index {1}.", batchNumber, index);
+          batchNumber++;
+
+          DatabaseLock[] lockObjects = new DatabaseLock[] { UnitOfWork.NeighborActivityLock, UnitOfWork.NeighborLock };
+          using (IDbContextTransaction transaction = await unitOfWork.BeginTransactionWithLockAsync(lockObjects))
+          {
+            bool success = false;
+            bool saveDb = false;
+            try
+            {
+              Neighbor neighbor = (await unitOfWork.NeighborRepository.GetAsync(n => n.NeighborId == neighborId)).FirstOrDefault();
+              if (neighbor != null)
+              {
+                int oldSharedActivitiesCount = neighbor.SharedActivities;
+                for (int loopIndex = 0; loopIndex < 100; loopIndex++)
+                {
+                  SharedActivityUpdateItem updateItem = neighborhoodSharedActivityUpdateRequest.Items[index];
+
+                  StoreSharedActivityUpdateResult storeResult = await StoreSharedActivityUpdateToDatabaseAsync(unitOfWork, updateItem, index, neighbor, messageBuilder, RequestMessage);
+                  if (storeResult.SaveDb) saveDb = true;
+                  if (storeResult.Error) error = true;
+                  if (storeResult.ErrorResponse != null) res = storeResult.ErrorResponse;
+
+                  // Error here means that we want to save all already processed items to the database
+                  // and quit the loop right after that, the response is filled with error response already.
+                  if (error) break;
+
+                  index++;
+                  if (index >= itemIndex) break;
+                }
+
+                if (oldSharedActivitiesCount != neighbor.SharedActivities)
+                {
+                  unitOfWork.NeighborRepository.Update(neighbor);
+                  saveDb = true;
+                }
+              }
+              else
+              {
+                log.Error("Unable to find neighbor ID '{0}', sending ERROR_REJECTED response.", neighborId.ToHex());
+                res = messageBuilder.CreateErrorRejectedResponse(RequestMessage);
+              }
+
+              if (saveDb)
+              {
+                await unitOfWork.SaveThrowAsync();
+                transaction.Commit();
+              }
+              success = true;
+            }
+            catch (Exception e)
+            {
+              log.Error("Exception occurred: {0}", e.ToString());
+            }
+
+            if (!success)
+            {
+              log.Warn("Rolling back transaction.");
+              unitOfWork.SafeTransactionRollback(transaction);
+            }
+
+            unitOfWork.ReleaseLock(lockObjects);
+          }
+
+          if (error) break;
+        }
+      }
+
+
+      if (res == null) res = messageBuilder.CreateNeighborhoodSharedActivityUpdateResponse(RequestMessage);
+
+      log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+      return res;
+    }
+
+
+
+    /// <summary>
+    /// Validates incoming SharedActivityUpdateItem update item.
+    /// </summary>
+    /// <param name="UpdateItem">Update item to validate.</param>
+    /// <param name="Index">Item index in the update message.</param>
+    /// <param name="SharedActivitiesCount">Number of activities the neighbor already shares with the activity server.</param>
+    /// <param name="UsedFullActivityIdsInBatch">List of activity full IDs of already validated items of this batch.</param>
+    /// <param name="MessageBuilder">Client's network message builder.</param>
+    /// <param name="RequestMessage">Full request message received by the client.</param>
+    /// <param name="ErrorResponse">If the validation fails, this is filled with response message to be sent to the neighbor.</param>
+    /// <returns>true if the validation is successful, false otherwise.</returns>
+    public bool ValidateSharedActivityUpdateItem(SharedActivityUpdateItem UpdateItem, int Index, int SharedActivitiesCount, HashSet<string> UsedFullActivityIdsInBatch, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
+    {
+      log.Trace("(Index:{0},SharedActivitiesCount:{1})", Index, SharedActivitiesCount);
+
+      bool res = false;
+      ErrorResponse = null;
+
+      switch (UpdateItem.ActionTypeCase)
+      {
+        case SharedActivityUpdateItem.ActionTypeOneofCase.Add:
+          res = ValidateSharedActivityAddItem(UpdateItem.Add, Index, SharedActivitiesCount, UsedFullActivityIdsInBatch, MessageBuilder, RequestMessage, out ErrorResponse);
+          break;
+
+        case SharedActivityUpdateItem.ActionTypeOneofCase.Change:
+          res = ValidateSharedActivityChangeItem(UpdateItem.Change, Index, UsedFullActivityIdsInBatch, MessageBuilder, RequestMessage, out ErrorResponse);
+          break;
+
+        case SharedActivityUpdateItem.ActionTypeOneofCase.Delete:
+          res = ValidateSharedActivityDeleteItem(UpdateItem.Delete, Index, UsedFullActivityIdsInBatch, MessageBuilder, RequestMessage, out ErrorResponse);
+          break;
+
+        default:
+          ErrorResponse = MessageBuilder.CreateErrorProtocolViolationResponse(RequestMessage);
+          res = false;
+          break;
+      }
+
+      log.Trace("(-):{0}", res);
+      return res;
+    }
+
+
+
+
+    /// <summary>
+    /// Validates incoming SharedActivityAddItem update item.
+    /// <para>This function does not verify whether the activity is not duplicate.</para>
+    /// </summary>
+    /// <param name="AddItem">Add item to validate.</param>
+    /// <param name="Index">Item index in the update message.</param>
+    /// <param name="SharedActivitiesCount">Number of activities the neighbor already shares with the activity server.</param>
+    /// <param name="UsedFullActivityIdsInBatch">List of activity full IDs of already validated items of this batch.</param>
+    /// <param name="MessageBuilder">Client's network message builder.</param>
+    /// <param name="RequestMessage">Full request message received by the client.</param>
+    /// <param name="ErrorResponse">If the validation fails, this is filled with response message to be sent to the neighbor.</param>
+    /// <returns>true if the validation is successful, false otherwise.</returns>
+    public bool ValidateSharedActivityAddItem(SharedActivityAddItem AddItem, int Index, int SharedActivitiesCount, HashSet<string> UsedFullActivityIdsInBatch, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
+    {
+      log.Trace("(Index:{0},SharedActivitiesCount:{1})", Index, SharedActivitiesCount);
+
+      bool res = false;
+      ErrorResponse = null;
+
+      string details = null;
+
+      if (SharedActivitiesCount >= ActivityBase.MaxPrimaryActivities)
+      {
+        log.Debug("Target server already sent too many activities.");
+        details = "add";
+      }
+
+      if (details == null)
+      {
+        SemVer version = new SemVer(AddItem.Version);
+        // Currently only supported version is 1.0.0.
+        if (!version.Equals(SemVer.V100))
+        {
+          log.Debug("Unsupported version '{0}'.", version);
+          details = "add.version";
+        }
+      }
+
+      if (details == null)
+      {
+        // We do not verify activity duplicity here, that is being done in ProcessMessageNeighborhoodSharedActivityUpdateRequestAsync.
+        uint activityId = AddItem.Id;
+
+        // 0 is not a valid activity identifier.
+        if (activityId == 0)
+        {
+          log.Debug("Invalid activity ID '{0}'.", activityId);
+          details = "add.id";
+        }
+      }
+
+      if (details == null)
+      {
+        byte[] pubKey = AddItem.OwnerPublicKey.ToByteArray();
+        bool pubKeyValid = (0 < pubKey.Length) && (pubKey.Length <= ProtocolHelper.MaxPublicKeyLengthBytes);
+        if (pubKeyValid)
+        {
+          byte[] identityId = Crypto.Sha256(pubKey);
+          NeighborActivity na = new NeighborActivity()
+          {
+            ActivityId = AddItem.Id,
+            OwnerIdentityId = identityId
+          };
+
+          string activityFullId = na.GetFullId();
+          if (!UsedFullActivityIdsInBatch.Contains(activityFullId))
+          {
+            UsedFullActivityIdsInBatch.Add(activityFullId);
+          }
+          else
+          {
+            log.Debug("Activity full ID '{0}' (public key '{1}') already processed in this request.", activityFullId, pubKey.ToHex());
+            details = "add.id";
+          }
+        }
+        else
+        {
+          log.Debug("Invalid public key length '{0}'.", pubKey.Length);
+          details = "add.ownerPublicKey";
+        }
+      }
+
+      if (details == null)
+      {
+        ServerContactInfo sci = AddItem.ProfileServerContact;
+        bool networkIdValid = sci.NetworkId.Length == ProtocolHelper.NetworkIdentifierLength;
+        IPAddress ipAddress = IPAddressExtensions.IpFromBytes(sci.IpAddress.ToByteArray());
+        bool ipAddressValid = (ipAddress != null) && (Config.Configuration.TestModeEnabled || !ipAddress.IsReservedOrLocal());
+        bool portValid = (1 <= sci.PrimaryPort) && (sci.PrimaryPort <= 65535);
+
+        if (!networkIdValid || !ipAddressValid || !portValid)
+        {
+          log.Debug("Profile server contact's network ID is {0}, IP address is {1}, port is {2}.", networkIdValid ? "valid" : "invalid", ipAddressValid ? "valid" : "invalid", portValid ? "valid" : "invalid");
+
+          if (!networkIdValid) details = "add.profileServerContact.networkId";
+          else if (!ipAddressValid) details = "add.profileServerContact.ipAddress";
+          else if (!portValid) details = "add.profileServerContact.primaryPort";
+        }
+      }
+
+      if (details == null)
+      {
+        string activityType = AddItem.Type;
+        if (activityType == null) activityType = "";
+
+        int byteLen = Encoding.UTF8.GetByteCount(activityType);
+        if (byteLen > ActivityBase.MaxActivityTypeLengthBytes)
+        {
+          log.Debug("Activity type too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityTypeLengthBytes);
+          details = "add.type";
+        }
+      }
+
+      if (details == null)
+      {
+        GpsLocation locLat = new GpsLocation(AddItem.Latitude, 0);
+        GpsLocation locLong = new GpsLocation(0, AddItem.Longitude);
+        if (!locLat.IsValid())
+        {
+          log.Debug("Latitude '{0}' is not a valid GPS latitude value.", AddItem.Latitude);
+          details = "add.latitude";
+        }
+        else if (!locLong.IsValid())
+        {
+          log.Debug("Longitude '{0}' is not a valid GPS longitude value.", AddItem.Longitude);
+          details = "add.longitude";
+        }
+      }
+
+      if (details == null)
+      {
+        uint precision = AddItem.Precision;
+        bool precisionValid = (0 <= precision) && (precision <= ActivityBase.MaxLocationPrecision);
+        if (!precisionValid)
+        {
+          log.Debug("Precision '{0}' is not an integer between 0 and {1}.", precision, ActivityBase.MaxLocationPrecision);
+          details = "add.precision";
+        }
+      }
+
+
+      if (details == null)
+      {
+        DateTime? startTime = ProtocolHelper.UnixTimestampMsToDateTime(AddItem.StartTime);
+        DateTime? expirationTime = ProtocolHelper.UnixTimestampMsToDateTime(AddItem.ExpirationTime);
+
+        if (startTime == null)
+        {
+          log.Debug("Invalid activity start time timestamp '{0}'.", AddItem.StartTime);
+          details = "add.startTime";
+        }
+        else if (expirationTime == null)
+        {
+          log.Debug("Invalid activity expiration time timestamp '{0}'.", AddItem.ExpirationTime);
+          details = "add.expirationTime";
+        }
+        else
+        {
+          if (startTime > expirationTime)
+          {
+            log.Debug("Activity expiration time has to be greater than or equal to its start time.");
+            details = "add.expirationTime";
+          }
+          else if (expirationTime.Value > DateTime.UtcNow.AddHours(ActivityBase.MaxActivityLifeTimeHours))
+          {
+            log.Debug("Activity expiration time {0} is more than {1} hours in the future.", expirationTime.Value.ToString("yyyy-MM-dd HH:mm:ss"), ActivityBase.MaxActivityLifeTimeHours);
+            details = "add.expirationTime";
+          }
+        }
+      }
+
+      if (details == null)
+      {
+        string extraData = AddItem.ExtraData;
+        if (extraData == null) extraData = "";
+
+        // Extra data is semicolon separated 'key=value' list, max ActivityBase.MaxActivityExtraDataLengthBytes bytes long.
+        int byteLen = Encoding.UTF8.GetByteCount(extraData);
+        if (byteLen > ActivityBase.MaxActivityExtraDataLengthBytes)
+        {
+          log.Debug("Extra data too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityExtraDataLengthBytes);
+          details = "add.extraData";
+        }
+      }
+
+      if (details == null)
+      {
+        res = true;
+      }
+      else ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, Index.ToString() + "." + details);
+
+      log.Trace("(-):{0}", res);
+      return res;
+    }
+
+
+    /// <summary>
+    /// Validates incoming SharedActivityChangeItem update item.
+    /// <para>This function does not verify whether the activity exists.
+    /// It also does not verify whether the new activity start time and expiration time are correct if they are not both changed.</para>
+    /// </summary>
+    /// <param name="ChangeItem">Change item to validate.</param>
+    /// <param name="Index">Item index in the update message.</param>
+    /// <param name="UsedFullActivityIdsInBatch">List of activity full IDs of already validated items of this batch.</param>
+    /// <param name="MessageBuilder">Client's network message builder.</param>
+    /// <param name="RequestMessage">Full request message received by the client.</param>
+    /// <param name="ErrorResponse">If the validation fails, this is filled with response message to be sent to the neighbor.</param>
+    /// <returns>true if the validation is successful, false otherwise.</returns>
+    public bool ValidateSharedActivityChangeItem(SharedActivityChangeItem ChangeItem, int Index, HashSet<string> UsedFullActivityIdsInBatch, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
+    {
+      log.Trace("(Index:{0})", Index);
+
+      bool res = false;
+      ErrorResponse = null;
+
+      string details = null;
+
+      uint activityId = ChangeItem.Id;
+
+      // 0 is not a valid activity identifier.
+      if (activityId == 0)
+      {
+        log.Debug("Invalid activity ID '{0}'.", activityId);
+        details = "change.id";
+      }
+
+      if (details == null)
+      {
+        byte[] identityId = ChangeItem.OwnerNetworkId.ToByteArray();
+        bool identityIdValid = identityId.Length == ProtocolHelper.NetworkIdentifierLength;
+        if (identityIdValid)
+        {
+          NeighborActivity na = new NeighborActivity()
+          {
+            ActivityId = ChangeItem.Id,
+            OwnerIdentityId = identityId
+          };
+
+          string activityFullId = na.GetFullId();
+          if (!UsedFullActivityIdsInBatch.Contains(activityFullId))
+          {
+            UsedFullActivityIdsInBatch.Add(activityFullId);
+          }
+          else
+          {
+            log.Debug("Activity full ID '{0}' already processed in this request.", activityFullId);
+            details = "change.id";
+          }
+        }
+        else
+        {
+          log.Debug("Invalid owner network ID length '{0}'.", identityId.Length);
+          details = "change.ownerNetworkId";
+        }
+      }
+
+
+      if (details == null)
+      {
+        if (!ChangeItem.SetLocation
+          && !ChangeItem.SetPrecision
+          && !ChangeItem.SetStartTime
+          && !ChangeItem.SetExpirationTime
+          && !ChangeItem.SetExtraData)
+        {
+          log.Debug("Nothing is going to change.");
+          details = "change.set*";
+        }
+      }
+
+      if ((details == null) && ChangeItem.SetLocation)
+      {
+        GpsLocation locLat = new GpsLocation(ChangeItem.Latitude, 0);
+        GpsLocation locLong = new GpsLocation(0, ChangeItem.Longitude);
+        if (!locLat.IsValid())
+        {
+          log.Debug("Latitude '{0}' is not a valid GPS latitude value.", ChangeItem.Latitude);
+          details = "change.latitude";
+        }
+        else if (!locLong.IsValid())
+        {
+          log.Debug("Longitude '{0}' is not a valid GPS longitude value.", ChangeItem.Longitude);
+          details = "change.longitude";
+        }
+      }
+
+      if ((details == null) && ChangeItem.SetPrecision)
+      {
+        uint precision = ChangeItem.Precision;
+        bool precisionValid = (0 <= precision) && (precision <= ActivityBase.MaxLocationPrecision);
+        if (!precisionValid)
+        {
+          log.Debug("Precision '{0}' is not an integer between 0 and {1}.", precision, ActivityBase.MaxLocationPrecision);
+          details = "change.precision";
+        }
+      }
+
+      DateTime? startTime = null;
+      DateTime? expirationTime = null;
+      if ((details == null) && ChangeItem.SetStartTime)
+      {
+        startTime = ProtocolHelper.UnixTimestampMsToDateTime(ChangeItem.StartTime);
+        if (startTime == null)
+        {
+          log.Debug("Invalid activity start time timestamp '{0}'.", ChangeItem.StartTime);
+          details = "change.startTime";
+        }
+      }
+
+      if ((details == null) && ChangeItem.SetExpirationTime)
+      {
+        expirationTime = ProtocolHelper.UnixTimestampMsToDateTime(ChangeItem.ExpirationTime);
+        if (expirationTime == null)
+        {
+          log.Debug("Invalid activity expiration time timestamp '{0}'.", ChangeItem.ExpirationTime);
+          details = "change.expirationTime";
+        }
+      }
+
+      if ((startTime != null) && (expirationTime != null))
+      {
+        if (startTime > expirationTime)
+        {
+          log.Debug("Activity expiration time has to be greater than or equal to its start time.");
+          details = "change.expirationTime";
+        }
+        else if (expirationTime.Value > DateTime.UtcNow.AddHours(ActivityBase.MaxActivityLifeTimeHours))
+        {
+          log.Debug("Activity expiration time {0} is more than {1} hours in the future.", expirationTime.Value.ToString("yyyy-MM-dd HH:mm:ss"), ActivityBase.MaxActivityLifeTimeHours);
+          details = "change.expirationTime";
+        }
+      }
+
+
+      if ((details == null) && ChangeItem.SetExtraData)
+      {
+        string extraData = ChangeItem.ExtraData;
+        if (extraData == null) extraData = "";
+
+        // Extra data is semicolon separated 'key=value' list, max ActivityBase.MaxActivityExtraDataLengthBytes bytes long.
+        int byteLen = Encoding.UTF8.GetByteCount(extraData);
+        if (byteLen > ActivityBase.MaxActivityExtraDataLengthBytes)
+        {
+          log.Debug("Extra data too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityExtraDataLengthBytes);
+          details = "change.extraData";
+        }
+      }
+
+
+      if (details == null)
+      {
+        res = true;
+      }
+      else ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, Index.ToString() + "." + details);
+
+      log.Trace("(-):{0}", res);
+      return res;
+    }
+
+
+
+    /// <summary>
+    /// Validates incoming SharedActivityDeleteItem update item.
+    /// </summary>
+    /// <para>This function does not verify whether the activity exists.</para>
+    /// <param name="DeleteItem">Delete item to validate.</param>
+    /// <param name="Index">Item index in the update message.</param>
+    /// <param name="UsedFullActivityIdsInBatch">List of activity full IDs of already validated items of this batch.</param>
+    /// <param name="MessageBuilder">Client's network message builder.</param>
+    /// <param name="RequestMessage">Full request message received by the client.</param>
+    /// <param name="ErrorResponse">If the validation fails, this is filled with response message to be sent to the neighbor.</param>
+    /// <returns>true if the validation is successful, false otherwise.</returns>
+    public bool ValidateSharedActivityDeleteItem(SharedActivityDeleteItem DeleteItem, int Index, HashSet<string> UsedFullActivityIdsInBatch, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
+    {
+      log.Trace("(Index:{0})", Index);
+
+      bool res = false;
+      ErrorResponse = null;
+
+      string details = null;
+
+      uint activityId = DeleteItem.Id;
+
+      // 0 is not a valid activity identifier.
+      if (activityId == 0)
+      {
+        log.Debug("Invalid activity ID '{0}'.", activityId);
+        details = "delete.id";
+      }
+
+      if (details == null)
+      {
+        byte[] identityId = DeleteItem.OwnerNetworkId.ToByteArray();
+        bool identityIdValid = identityId.Length == ProtocolHelper.NetworkIdentifierLength;
+        if (identityIdValid)
+        {
+          NeighborActivity na = new NeighborActivity()
+          {
+            ActivityId = DeleteItem.Id,
+            OwnerIdentityId = identityId
+          };
+
+          string activityFullId = na.GetFullId();
+          if (!UsedFullActivityIdsInBatch.Contains(activityFullId))
+          {
+            UsedFullActivityIdsInBatch.Add(activityFullId);
+          }
+          else
+          {
+            log.Debug("Activity full ID '{0}' already processed in this request.", activityFullId);
+            details = "delete.id";
+          }
+        }
+        else
+        {
+          log.Debug("Invalid owner network ID length '{0}'.", identityId.Length);
+          details = "delete.ownerNetworkId";
+        }
+      }
+
+
+      if (details == null)
+      {
+        res = true;
+      }
+      else ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, Index.ToString() + "." + details);
+
+      log.Trace("(-):{0}", res);
+      return res;
+    }
+
+
+    /// <summary>
+    /// Description of result of StoreSharedActivityUpdateToDatabase function.
+    /// </summary>
+    private class StoreSharedActivityUpdateResult
+    {
+      /// <summary>True if there was a change to the database that should be saved.</summary>
+      public bool SaveDb;
+
+      /// <summary>True if there was an error and no more update items should be processed.</summary>
+      public bool Error;
+
+      /// <summary>If there was an error, this is the error response message to be delivered to the neighbor.</summary>
+      public ProxProtocolMessage ErrorResponse;
+    }
+
+
+    /// <summary>
+    /// Updates a database according to the update item that is already partially validated.
+    /// </summary>
+    /// <param name="UnitOfWork">Instance of unit of work.</param>
+    /// <param name="UpdateItem">Update item that is to be processed.</param>
+    /// <param name="UpdateItemIndex">Index of the item within the request.</param>
+    /// <param name="Neighbor">Identifier of the neighbor that sent the request.</param>
+    /// <param name="MessageBuilder">Neighbor client's message builder.</param>
+    /// <param name="RequestMessage">Original request message sent by the neighbor.</param>
+    /// <returns>Result described by StoreSharedActivityUpdateResult class.</returns>
+    /// <remarks>The caller of this function is responsible to call this function within a database transaction with acquired NeighborIdentityLock.</remarks>
+    private async Task<StoreSharedActivityUpdateResult> StoreSharedActivityUpdateToDatabaseAsync(UnitOfWork UnitOfWork, SharedActivityUpdateItem UpdateItem, int UpdateItemIndex, Neighbor Neighbor, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage)
+    {
+      log.Trace("(UpdateItemIndex:{0},Neighbor.SharedActivities:{1})", UpdateItemIndex, Neighbor.SharedActivities);
+
+      StoreSharedActivityUpdateResult res = new StoreSharedActivityUpdateResult()
+      {
+        SaveDb = false,
+        Error = false,
+        ErrorResponse = null,
+      };
+
+      switch (UpdateItem.ActionTypeCase)
+      {
+        case SharedActivityUpdateItem.ActionTypeOneofCase.Add:
+          {
+            if (Neighbor.SharedActivities >= ActivityBase.MaxPrimaryActivities)
+            {
+              log.Warn("Neighbor ID '{0}' already shares the maximum number of profiles.", Neighbor.NeighborId.ToHex());
+              res.ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, UpdateItemIndex + ".add");
+              res.Error = true;
+              break;
+            }
+
+            SharedActivityAddItem addItem = UpdateItem.Add;
+            uint activityId = addItem.Id;
+            byte[] pubKey = addItem.OwnerPublicKey.ToByteArray();
+            byte[] ownerIdentityId = Crypto.Sha256(pubKey);
+
+            // Activity already exists if there exists a NeighborActivity with same activity ID and owner identity ID and the same primary server ID.
+            // It may seem enough to just use activity ID and owner identit ID and not ID of its primary proximity server.
+            // However, the activity can migrate to another proximity server and we can not guarantee the order of the messages in the network,
+            // which means the delete update from old proximity server can arrive later than this add item.
+            NeighborActivity existingActivity = (await UnitOfWork.NeighborActivityRepository.GetAsync(a => (a.ActivityId == activityId) && (a.OwnerIdentityId == ownerIdentityId) && (a.PrimaryServerId == Neighbor.NeighborId))).FirstOrDefault();
+            if (existingActivity == null)
+            {
+              GpsLocation location = new GpsLocation(addItem.Latitude, addItem.Longitude);
+              NeighborActivity newActivity = new NeighborActivity()
+              {
+                PrimaryServerId = Neighbor.NeighborId,
+                Version = addItem.Version.ToByteArray(),
+                ActivityId = addItem.Id,
+                OwnerIdentityId = ownerIdentityId,
+                OwnerPublicKey = pubKey,
+                OwnerProfileServerId = addItem.ProfileServerContact.NetworkId.ToByteArray(),
+                OwnerProfileServerIpAddress = addItem.ProfileServerContact.IpAddress.ToByteArray(),
+                OwnerProfileServerPrimaryPort = (ushort)addItem.ProfileServerContact.PrimaryPort,
+                Type = addItem.Type,
+                LocationLatitude = location.Latitude,
+                LocationLongitude = location.Longitude,
+                PrecisionRadius = addItem.Precision,
+                StartTime = ProtocolHelper.UnixTimestampMsToDateTime(addItem.StartTime).Value,
+                ExpirationTime = ProtocolHelper.UnixTimestampMsToDateTime(addItem.ExpirationTime).Value,
+                ExtraData = addItem.ExtraData
+              };
+
+              await UnitOfWork.NeighborActivityRepository.InsertAsync(newActivity);
+              Neighbor.SharedActivities++;
+              res.SaveDb = true;
+            }
+            else
+            {
+              log.Warn("Activity ID {0}, owner identity ID '{1}' already exists with primary proximity server ID '{2}'.", activityId, ownerIdentityId.ToHex(), Neighbor.NeighborId.ToHex());
+              res.ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, UpdateItemIndex + ".add.id");
+              res.Error = true;
+            }
+
+            break;
+          }
+
+        case SharedActivityUpdateItem.ActionTypeOneofCase.Change:
+          {
+            SharedActivityChangeItem changeItem = UpdateItem.Change;
+            uint activityId = changeItem.Id;
+            byte[] ownerIdentityId = changeItem.OwnerNetworkId.ToByteArray();
+
+            // Activity already exists if there exists a NeighborActivity with same activity ID and owner identity ID and the same primary server ID.
+            NeighborActivity existingActivity = (await UnitOfWork.NeighborActivityRepository.GetAsync(a => (a.ActivityId == activityId) && (a.OwnerIdentityId == ownerIdentityId) && (a.PrimaryServerId == Neighbor.NeighborId))).FirstOrDefault();
+            if (existingActivity != null)
+            {
+              GpsLocation location = new GpsLocation(changeItem.Latitude, changeItem.Longitude);
+
+              if (changeItem.SetLocation)
+              {
+                existingActivity.LocationLatitude = location.Latitude;
+                existingActivity.LocationLongitude = location.Longitude;
+              }
+
+              if (changeItem.SetPrecision) existingActivity.PrecisionRadius = changeItem.Precision;
+              if (changeItem.SetStartTime) existingActivity.StartTime = ProtocolHelper.UnixTimestampMsToDateTime(changeItem.StartTime).Value;
+              if (changeItem.SetExpirationTime) existingActivity.ExpirationTime = ProtocolHelper.UnixTimestampMsToDateTime(changeItem.ExpirationTime).Value;
+
+              if (changeItem.SetExtraData) existingActivity.ExtraData = changeItem.ExtraData;
+
+              UnitOfWork.NeighborActivityRepository.Update(existingActivity);
+              res.SaveDb = true;
+            }
+            else
+            {
+              log.Warn("Activity ID {0}, owner identity ID '{1}' does exists with primary proximity server ID '{2}'.", activityId, ownerIdentityId.ToHex(), Neighbor.NeighborId.ToHex());
+              res.ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, UpdateItemIndex + ".change.id");
+              res.Error = true;
+            }
+
+            break;
+          }
+
+        case SharedActivityUpdateItem.ActionTypeOneofCase.Delete:
+          {
+            SharedActivityDeleteItem deleteItem = UpdateItem.Delete;
+            uint activityId = deleteItem.Id;
+            byte[] ownerIdentityId = deleteItem.OwnerNetworkId.ToByteArray();
+
+            // Activity already exists if there exists a NeighborActivity with same activity ID and owner identity ID and the same primary server ID.
+            NeighborActivity existingActivity = (await UnitOfWork.NeighborActivityRepository.GetAsync(a => (a.ActivityId == activityId) && (a.OwnerIdentityId == ownerIdentityId) && (a.PrimaryServerId == Neighbor.NeighborId))).FirstOrDefault();
+            if (existingActivity != null)
+            {
+              UnitOfWork.NeighborActivityRepository.Delete(existingActivity);
+              Neighbor.SharedActivities--;
+              res.SaveDb = true;
+            }
+            else
+            {
+              log.Warn("Activity ID {0}, owner identity ID '{1}' does exists with primary proximity server ID '{2}'.", activityId, ownerIdentityId.ToHex(), Neighbor.NeighborId.ToHex());
+              res.ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, UpdateItemIndex + ".delete.id");
+              res.Error = true;
+            }
+            break;
+          }
+      }
+
+      log.Trace("(-):*.Error={0},*.SaveDb={1}", res.Error, res.SaveDb);
+      return res;
+    }
+
+
+    /// <summary>
+    /// Processes StopNeighborhoodUpdatesRequest message from client.
+    /// <para>Removes follower server from the database and also removes all pending actions to the follower.</para>
+    /// </summary>
+    /// <param name="Client">Client that sent the request.</param>
+    /// <param name="RequestMessage">Full request message.</param>
+    /// <returns>Response message to be sent to the client.</returns>
+    public async Task<ProxProtocolMessage> ProcessMessageStopNeighborhoodUpdatesRequestAsync(IncomingClient Client, ProxProtocolMessage RequestMessage)
+    {
+      log.Trace("()");
+
+      ProxProtocolMessage res = null;
+      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Neighbor, ClientConversationStatus.Verified, out res))
+      {
+        log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+        return res;
+      }
+
+      ProxMessageBuilder messageBuilder = Client.MessageBuilder;
+      StopNeighborhoodUpdatesRequest stopNeighborhoodUpdatesRequest = RequestMessage.Request.ConversationRequest.StopNeighborhoodUpdates;
+
+
+      byte[] followerId = Client.IdentityId;
+
+      using (UnitOfWork unitOfWork = new UnitOfWork())
+      {
+        Status status = await unitOfWork.FollowerRepository.DeleteFollowerAsync(followerId);
+
+        if (status == Status.Ok) res = messageBuilder.CreateStopNeighborhoodUpdatesResponse(RequestMessage);
+        else if (status == Status.ErrorNotFound) res = messageBuilder.CreateErrorNotFoundResponse(RequestMessage);
+        else res = messageBuilder.CreateErrorInternalResponse(RequestMessage);
+      }
+
+
+      log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+      return res;
+    }
+
+
+    /// <summary>
+    /// Processes FinishNeighborhoodInitializationResponse message from client.
+    /// <para>
+    /// This response is received when the neighborhood initialization process is finished and the follower server confirms that.
+    /// The proximity server marks the follower as fully synchronized in the database. It also unblocks the neighborhood action queue 
+    /// for this follower.
+    /// </para>
+    /// </summary>
+    /// <param name="Client">Client that sent the response.</param>
+    /// <param name="ResponseMessage">Full response message.</param>
+    /// <param name="Request">Unfinished request message that corresponds to the response message.</param>
+    /// <returns>true if the connection to the client that sent the response should remain open, false if the client should be disconnected.</returns>
+    public async Task<bool> ProcessMessageFinishNeighborhoodInitializationResponseAsync(IncomingClient Client, ProxProtocolMessage ResponseMessage, UnfinishedRequest Request)
+    {
+      log.Trace("()");
+
+      bool res = false;
+
+      if (Client.NeighborhoodInitializationProcessInProgress)
+      {
+        if (ResponseMessage.Response.Status == Status.Ok)
+        {
+          using (UnitOfWork unitOfWork = new UnitOfWork())
+          {
+            byte[] followerId = Client.IdentityId;
+
+            bool success = false;
+            bool signalNeighborhoodAction = false;
+            DatabaseLock[] lockObjects = new DatabaseLock[] { UnitOfWork.FollowerLock, UnitOfWork.NeighborhoodActionLock };
+            using (IDbContextTransaction transaction = await unitOfWork.BeginTransactionWithLockAsync(lockObjects))
+            {
+              try
+              {
+                bool saveDb = false;
+
+                // Update the follower, so it is considered as fully initialized.
+                Follower follower = (await unitOfWork.FollowerRepository.GetAsync(f => f.FollowerId == followerId)).FirstOrDefault();
+                if (follower != null)
+                {
+                  follower.LastRefreshTime = DateTime.UtcNow;
+                  unitOfWork.FollowerRepository.Update(follower);
+                  saveDb = true;
+                }
+                else log.Error("Follower ID '{0}' not found.", followerId.ToHex());
+
+                // Update the blocking neighbhorhood action, so that new updates are sent to the follower.
+                NeighborhoodAction action = (await unitOfWork.NeighborhoodActionRepository.GetAsync(a => (a.ServerId == followerId) && (a.Type == NeighborhoodActionType.InitializationProcessInProgress))).FirstOrDefault();
+                if (action != null)
+                {
+                  action.ExecuteAfter = DateTime.UtcNow;
+                  unitOfWork.NeighborhoodActionRepository.Update(action);
+                  signalNeighborhoodAction = true;
+                  saveDb = true;
+                }
+                else log.Error("Initialization process in progress neighborhood action for follower ID '{0}' not found.", followerId.ToHex());
+
+
+                if (saveDb)
+                {
+                  await unitOfWork.SaveThrowAsync();
+                  transaction.Commit();
+                }
+
+                Client.NeighborhoodInitializationProcessInProgress = false;
+                success = true;
+                res = true;
+              }
+              catch (Exception e)
+              {
+                log.Error("Exception occurred: {0}", e.ToString());
+              }
+
+              if (success)
+              {
+                if (signalNeighborhoodAction)
+                {
+                  NeighborhoodActionProcessor neighborhoodActionProcessor = (NeighborhoodActionProcessor)Base.ComponentDictionary[NeighborhoodActionProcessor.ComponentName];
+                  neighborhoodActionProcessor.Signal();
+                }
+              }
+              else
+              {
+                log.Warn("Rolling back transaction.");
+                unitOfWork.SafeTransactionRollback(transaction);
+              }
+            }
+            unitOfWork.ReleaseLock(lockObjects);
+          }
+        }
+        else
+        {
+          // Client is a follower in the middle of the initialization process and failed to accept the finish request.
+          // Follower will be deleted automatically as the connection terminates in IncomingClient.HandleDisconnect.
+          log.Error("Client ID '{0}' is a follower and failed to accept finish request to neighborhood initialization process (error code {1}), it will be disconnected and deleted from our database.", Client.IdentityId.ToHex(), ResponseMessage.Response.Status);
+        }
+      }
+      else log.Error("Client ID '{0}' does not have neighborhood initialization process in progress.", Client.IdentityId.ToHex());
+
+      log.Trace("(-):{0}", res);
+      return res;
+    }
+
+
+#warning zjisti jestli potrebujeme neighbor action refreshe 
   }
 }

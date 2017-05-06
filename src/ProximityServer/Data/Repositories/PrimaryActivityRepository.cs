@@ -130,7 +130,10 @@ namespace ProximityServer.Data.Repositories
 
 
     /// <summary>
-    /// Updates an existing activity in the database. Then a new neighborhood action is created to propagate the changes to the neighborhood.
+    /// Updates an existing activity in the database. Then a new neighborhood action is created to propagate the changes to the neighborhood 
+    /// if this is required.
+    /// <para>Note that the change in activity is not propagated if the client sets no propagation flag in the request, or if only the activity 
+    /// expiration date or its location is changed.</para>
     /// </summary>
     /// <param name="UpdateRequest">Update request received from the client.</param>
     /// <param name="OwnerIdentityId">Network ID of the client who requested the update.</param>
@@ -180,8 +183,13 @@ namespace ProximityServer.Data.Repositories
               Update(existingActivity);
 
 
-              // The activity has to be propagated to all our followers we create database actions that will be processed by dedicated thread.
-              signalNeighborhoodAction = await unitOfWork.NeighborhoodActionRepository.AddActivityFollowerActionsAsync(NeighborhoodActionType.ChangeActivity, existingActivity.ActivityId, existingActivity.OwnerIdentityId, UpdateRequest.ToString());
+              bool propagateChange = !UpdateRequest.NoPropagation && (UpdateRequest.SetStartTime || UpdateRequest.SetPrecision || UpdateRequest.SetExtraData);
+              if (propagateChange)
+              {
+                // The activity has to be propagated to all our followers we create database actions that will be processed by dedicated thread.
+                signalNeighborhoodAction = await unitOfWork.NeighborhoodActionRepository.AddActivityFollowerActionsAsync(NeighborhoodActionType.ChangeActivity, existingActivity.ActivityId, existingActivity.OwnerIdentityId, UpdateRequest.ToString());
+              }
+              else log.Trace("Change of activity ID {0}, owner identity ID '{1}' won't be propagated to neighborhood.", existingActivity.ActivityId, existingActivity.OwnerIdentityId);
 
               await unitOfWork.SaveThrowAsync();
               transaction.Commit();

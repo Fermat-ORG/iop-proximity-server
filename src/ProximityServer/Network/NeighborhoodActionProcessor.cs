@@ -412,21 +412,21 @@ namespace ProximityServer.Network
       switch (Action.Type)
       {
         case NeighborhoodActionType.AddNeighbor:
-          res = await NeighborhoodInitializationProcess(Action.ServerId, Action.ExecuteAfter.Value, Action.Id);
+          res = await NeighborhoodInitializationProcessAsync(Action.ServerId, Action.ExecuteAfter.Value, Action.Id);
           break;
 
         case NeighborhoodActionType.RemoveNeighbor:
-          res = await NeighborhoodRemoveNeighbor(Action.ServerId, Action.Id);
+          res = await NeighborhoodRemoveNeighborAsync(Action.ServerId, Action.Id);
           break;
 
         case NeighborhoodActionType.StopNeighborhoodUpdates:
-          res = await NeighborhoodRequestStopUpdates(Action.ServerId, Action.AdditionalData);
+          res = await NeighborhoodRequestStopUpdatesAsync(Action.ServerId, Action.AdditionalData);
           break;
 
         case NeighborhoodActionType.AddActivity:
         case NeighborhoodActionType.ChangeActivity:
         case NeighborhoodActionType.RemoveActivity:
-          res = await NeighborhoodActivityUpdate(Action.ServerId, Action.TargetActivityId, Action.TargetActivityOwnerId, Action.Type, Action.AdditionalData, Action.Id);
+          res = await NeighborhoodActivityUpdateAsync(Action.ServerId, Action.TargetActivityId, Action.TargetActivityOwnerId, Action.Type, Action.AdditionalData, Action.Id);
           break;
 
         case NeighborhoodActionType.InitializationProcessInProgress:
@@ -454,12 +454,12 @@ namespace ProximityServer.Network
     /// <param name="NeighborId">Network identifer of the neighbor server.</param>
     /// <param name="MustFinishBefore">Time before which the initialization process must be completed.</param>
     /// <returns>true if the neighborhood action responsible for executing this method should be removed, false otherwise.</returns>
-    private async Task<bool> NeighborhoodInitializationProcess(byte[] NeighborId, DateTime MustFinishBefore, int CurrentActionId)
+    private async Task<bool> NeighborhoodInitializationProcessAsync(byte[] NeighborId, DateTime MustFinishBefore, int CurrentActionId)
     {
       log.Trace("(NeighborId:'{0}',MustFinishBefore:{1},CurrentActionId:{2})", NeighborId.ToHex(), MustFinishBefore.ToString("yyyy-MM-dd HH:mm:ss"), CurrentActionId);
 
       bool res = false;
-      /*
+
       // We MUST finish before MustFinishBefore time, so to be sure, we will terminate the process 
       // if we find ourselves running 90 seconds before that time. We have 60 seconds read timeout 
       // on the stream, so in the worst case, we should have 30 seconds reserve.
@@ -468,7 +468,7 @@ namespace ProximityServer.Network
       log.Trace("Setting up safe deadline to {0}.", safeDeadline.ToString("yyyy-MM-dd HH:mm:ss"));
 
       bool deleteNeighbor = false;
-      bool resetSrNeighborPort = false;
+      bool resetNeighborPort = false;
 
       StrongBox<bool> notFound = new StrongBox<bool>(false);
       IPEndPoint endPoint = await GetNeighborServerContactAsync(NeighborId, notFound);
@@ -476,13 +476,13 @@ namespace ProximityServer.Network
       {
         using (OutgoingClient client = new OutgoingClient(endPoint, true, ShutdownSignaling.ShutdownCancellationTokenSource.Token))
         {
-          Dictionary<byte[], NeighborIdentity> identityDatabase = new Dictionary<byte[], NeighborIdentity>(StructuralEqualityComparer<byte[]>.Default);
-          client.Context = identityDatabase;
+          Dictionary<string, NeighborActivity> activityDatabase = new Dictionary<string, NeighborActivity>(StringComparer.Ordinal);
+          client.Context = activityDatabase;
 
           bool connected = await client.ConnectAndVerifyIdentityAsync();
           if (!connected)
           {
-            log.Debug("Failed to connect to neighbor ID '{0}' on address '{1}'. Trying to get new value of its srNeighbor port from its primaryPort.", NeighborId.ToHex(), endPoint);
+            log.Debug("Failed to connect to neighbor ID '{0}' on address '{1}'. Trying to get new value of its neighbor port from its primaryPort.", NeighborId.ToHex(), endPoint);
             IPEndPoint newEndPoint = await GetNeighborServerContactAsync(NeighborId, notFound, true);
             if (newEndPoint != null)
             {
@@ -490,14 +490,14 @@ namespace ProximityServer.Network
               client.SetRemoteEndPoint(endPoint);
               connected = await client.ConnectAndVerifyIdentityAsync();
             }
-            else log.Debug("Failed to get srNeighbor port from primaryPort of neighbor ID '{0}'.", NeighborId.ToHex());
+            else log.Debug("Failed to get neighbor port from primaryPort of neighbor ID '{0}'.", NeighborId.ToHex());
           }
 
           if (connected)
           {
             if (client.MatchServerId(NeighborId))
             {
-              if (await client.StartNeighborhoodInitializationAsync(primaryPort, srNeighborPort))
+              if (await client.StartNeighborhoodInitializationAsync(primaryPort, neighborPort))
               {
                 bool error = false;
                 bool done = false;
@@ -510,10 +510,10 @@ namespace ProximityServer.Network
                     break;
                   }
 
-                  PsProtocolMessage requestMessage = await client.ReceiveMessageAsync();
+                  ProxProtocolMessage requestMessage = await client.ReceiveMessageAsync();
                   if (requestMessage != null)
                   {
-                    PsProtocolMessage responseMessage = client.MessageBuilder.CreateErrorProtocolViolationResponse(requestMessage);
+                    ProxProtocolMessage responseMessage = client.MessageBuilder.CreateErrorProtocolViolationResponse(requestMessage);
 
                     if (requestMessage.MessageTypeCase == Message.MessageTypeOneofCase.Request)
                     {
@@ -524,8 +524,8 @@ namespace ProximityServer.Network
                         log.Trace("Conversation request type '{0}' received.", conversationRequest.RequestTypeCase);
                         switch (conversationRequest.RequestTypeCase)
                         {
-                          case ConversationRequest.RequestTypeOneofCase.NeighborhoodSharedProfileUpdate:
-                            responseMessage = await ProcessMessageNeighborhoodSharedProfileUpdateRequestAsync(client, requestMessage);
+                          case ConversationRequest.RequestTypeOneofCase.NeighborhoodSharedActivityUpdate:
+                            responseMessage = ProcessMessageNeighborhoodSharedActivityUpdateRequest(client, requestMessage);
                             break;
 
                           case ConversationRequest.RequestTypeOneofCase.FinishNeighborhoodInitialization:
@@ -573,18 +573,6 @@ namespace ProximityServer.Network
                 }
 
                 res = !error;
-
-                if (!res)
-                {
-                  log.Debug("Error occurred, erasing images of all profiles received from neighbor ID '{0}'.", NeighborId.ToHex());
-
-                  ImageManager imageManager = (ImageManager)Base.ComponentDictionary[ImageManager.ComponentName];
-                  foreach (NeighborIdentity identity in identityDatabase.Values)
-                  {
-                    if (identity.ThumbnailImage != null)
-                      imageManager.RemoveImageReference(identity.ThumbnailImage);
-                  }
-                }
               }
               else
               {
@@ -595,8 +583,8 @@ namespace ProximityServer.Network
                 }
                 else if (client.LastResponseStatus == Status.ErrorBadRole)
                 {
-                  log.Info("Neighbor ID '{0}' rejected start of initialization process to bad port usage (port {1} was used), reseting srNeighbor port for this follower, will retry later.", NeighborId.ToHex(), endPoint.Port);
-                  resetSrNeighborPort = true;
+                  log.Info("Neighbor ID '{0}' rejected start of initialization process to bad port usage (port {1} was used), reseting neighbor port for this follower, will retry later.", NeighborId.ToHex(), endPoint.Port);
+                  resetNeighborPort = true;
                 }
                 else log.Warn("Starting the intialization process failed with neighbor ID '{0}', will retry later.", NeighborId.ToHex());
               }
@@ -621,9 +609,10 @@ namespace ProximityServer.Network
         {
           log.Warn("Unable to find neighbor ID '{0}' IP and port information, will retry later.", NeighborId.ToHex());
           //
-          // If we are here it means that srNeighborPort of this neighbor was reset before because we received ERROR_BAD_ROLE from the old srNeighborPort port.
-          // This could happen if the neighbor server changed its ports and the port we know is not used as srNeighborPort anymore.
-          // Then we attempted to connect to its primaryPort to get new value for its srNeighborPort and this failed as well,
+          // If we are here it means that neighborPort of this neighbor was reset before because we received ERROR_BAD_ROLE from the old neighborPort port.
+          // Alternatively, we could have receive update from LOC server changing the primary port of the neighbor, in which case we expect neighbor port to change as well.
+          // This could happen if the neighbor server changed its ports and the port we know is not used as neighborPort anymore.
+          // Then we attempted to connect to its primaryPort to get new value for its neighborPort and this failed as well,
           // which means that the server was offline.
           //
           // The solution here is to wait. All actions to this neighbor will be blocked and this particular action will be retried later again.
@@ -649,33 +638,34 @@ namespace ProximityServer.Network
         }
       }
 
-      if (resetSrNeighborPort)
+      if (resetNeighborPort)
       {
         using (UnitOfWork unitOfWork = new UnitOfWork())
         {
-          if (await unitOfWork.NeighborRepository.ResetSrNeighborPortAsync(NeighborId)) log.Info("srNeighbor port of neighbor ID '{0}' has been reset.", NeighborId.ToHex());
-          else log.Error("Unable to reset srNeighbor port of neighbor ID '{0}'.", NeighborId.ToHex());
+          if (await unitOfWork.NeighborRepository.ResetNeighborPortAsync(NeighborId)) log.Info("Neighbor port of neighbor ID '{0}' has been reset.", NeighborId.ToHex());
+          else log.Error("Unable to reset neighbor port of neighbor ID '{0}'.", NeighborId.ToHex());
         }
       }
-  */
+
+
       log.Trace("(-):{0}", res);
       return res;
     }
 
 
     /// <summary>
-    /// Obtains IP address and srNeighbor port from neighbor server's network identifier.
+    /// Obtains IP address and neighbor port from neighbor server's network identifier.
     /// </summary>
     /// <param name="NeighborId">Network identifer of the neighbor server.</param>
     /// <param name="NotFound">If the function fails, this is set to true if the reason for failure was that the neighbor was not found.</param>
-    /// <param name="IgnoreDbPortValue">If set to true, the function will ignore SrNeighborPort value of the neighbor even if it is set in the database 
-    /// and will contact the neighbor on its primary port and then update SrNeighborPort in the database, if it successfully gets its value.</param>
+    /// <param name="IgnoreDbPortValue">If set to true, the function will ignore NeighborPort value of the neighbor even if it is set in the database 
+    /// and will contact the neighbor on its primary port and then update NeighborPort in the database, if it successfully gets its value.</param>
     /// <returns>End point description or null if the function fails.</returns>
     private async Task<IPEndPoint> GetNeighborServerContactAsync(byte[] NeighborId, StrongBox<bool> NotFound, bool IgnoreDbPortValue = false)
     {
       log.Trace("(NeighborId:'{0}',IgnoreDbPortValue:{1})", NeighborId.ToHex(), IgnoreDbPortValue);
 
-      IPEndPoint res = null;/*
+      IPEndPoint res = null;
       using (UnitOfWork unitOfWork = new UnitOfWork())
       {
         DatabaseLock lockObject = null;
@@ -686,27 +676,27 @@ namespace ProximityServer.Network
           if (neighbor != null)
           {
             IPAddress addr = IPAddress.Parse(neighbor.IpAddress);
-            if (!IgnoreDbPortValue && (neighbor.SrNeighborPort != null))
+            if (!IgnoreDbPortValue && (neighbor.NeighborPort != null))
             {
-              res = new IPEndPoint(addr, neighbor.SrNeighborPort.Value);
+              res = new IPEndPoint(addr, neighbor.NeighborPort.Value);
             }
             else
             {
-              // We do not know srNeighbor port of this neighbor yet (or we ignore it), we have to connect to its primary port and get that information.
-              int srNeighborPort = await GetServerRolePortFromPrimaryPort(addr, neighbor.PrimaryPort, ServerRoleType.SrNeighbor);
-              if (srNeighborPort != 0)
+              // We do not know neighbor port of this neighbor yet (or we ignore it), we have to connect to its primary port and get that information.
+              int neighborPort = await GetServerRolePortFromPrimaryPort(addr, neighbor.PrimaryPort, ServerRoleType.Neighbor);
+              if (neighborPort != 0)
               {
                 lockObject = UnitOfWork.NeighborLock;
                 await unitOfWork.AcquireLockAsync(lockObject);
                 unlock = true;
 
-                neighbor.SrNeighborPort = srNeighborPort;
+                neighbor.NeighborPort = neighborPort;
                 if (!await unitOfWork.SaveAsync())
-                  log.Error("Unable to save new srNeighbor port information {0} of neighbor ID '{1}' to the database.", srNeighborPort, NeighborId.ToHex());
+                  log.Error("Unable to save new neighbor port information {0} of neighbor ID '{1}' to the database.", neighborPort, NeighborId.ToHex());
 
-                res = new IPEndPoint(addr, srNeighborPort);
+                res = new IPEndPoint(addr, neighborPort);
               }
-              else log.Debug("Unable to obtain srNeighbor port from primary port of neighbor ID '{0}'.", NeighborId.ToHex());
+              else log.Debug("Unable to obtain neighbor port from primary port of neighbor ID '{0}'.", NeighborId.ToHex());
             }
           }
           else
@@ -721,10 +711,11 @@ namespace ProximityServer.Network
         }
 
         if (unlock) unitOfWork.ReleaseLock(lockObject);
-      }*/
+      }
 
       log.Trace("(-):{0}", res != null ? res.ToString() : "null");
       return res;
+
     }
 
 
@@ -838,47 +829,58 @@ namespace ProximityServer.Network
     /// <param name="NeighborId">Network identifier of the former neighbor server.</param>
     /// <param name="CurrentActionId">Identifier of the action being executed.</param>
     /// <returns>true if the neighborhood action responsible for executing this method should be removed, false otherwise.</returns>
-    private async Task<bool> NeighborhoodRemoveNeighbor(byte[] NeighborId, int CurrentActionId)
+    private async Task<bool> NeighborhoodRemoveNeighborAsync(byte[] NeighborId, int CurrentActionId)
     {
       log.Trace("(NeighborId:'{0}',CurrentActionId:{1})", NeighborId.ToHex(), CurrentActionId);
 
-      bool res = false;/*
+      bool res = false;
       using (UnitOfWork unitOfWork = new UnitOfWork())
       {
-        Neighbor neighbor = (await unitOfWork.NeighborRepository.GetAsync(n => n.NeighborId == NeighborId, null, false)).FirstOrDefault();
-        string neighborInfo = JsonConvert.SerializeObject(neighbor);
-
-        // Delete neighbor completely.
-        res = await unitOfWork.NeighborRepository.DeleteNeighbor(unitOfWork, NeighborId, CurrentActionId);
-
-        // Add action that will contact the neighbor and ask it to stop sending updates.
-        // Note that the neighbor information will be deleted by the time this action 
-        // is executed and this is why we have to fill in AdditionalData.
-        NeighborhoodAction stopUpdatesAction = new NeighborhoodAction()
-        {
-          ServerId = NeighborId,
-          Type = NeighborhoodActionType.StopNeighborhoodUpdates,
-          TargetIdentityId = null,
-          ExecuteAfter = DateTime.UtcNow,
-          Timestamp = DateTime.UtcNow,
-          AdditionalData = neighborInfo
-        };
-
+        bool unlock = false;
         DatabaseLock lockObject = UnitOfWork.NeighborhoodActionLock;
-        await unitOfWork.AcquireLockAsync(lockObject);
         try
         {
-          await unitOfWork.NeighborhoodActionRepository.InsertAsync(stopUpdatesAction);
+          Neighbor neighbor = (await unitOfWork.NeighborRepository.GetAsync(n => n.NeighborId == NeighborId, null, true)).FirstOrDefault();
+          if (neighbor != null)
+          {
+            string neighborInfo = JsonConvert.SerializeObject(neighbor);
 
-          await unitOfWork.SaveThrowAsync();
+            // Delete neighbor completely.
+            res = await unitOfWork.NeighborRepository.DeleteNeighborAsync(NeighborId, CurrentActionId);
+
+            // Add action that will contact the neighbor and ask it to stop sending updates.
+            // Note that the neighbor information will be deleted by the time this action 
+            // is executed and this is why we have to fill in AdditionalData.
+            NeighborhoodAction stopUpdatesAction = new NeighborhoodAction()
+            {
+              ServerId = NeighborId,
+              Type = NeighborhoodActionType.StopNeighborhoodUpdates,
+              TargetActivityId = 0,
+              TargetActivityOwnerId = null,  
+              ExecuteAfter = DateTime.UtcNow,
+              Timestamp = DateTime.UtcNow,
+              AdditionalData = neighborInfo
+            };
+
+            await unitOfWork.AcquireLockAsync(lockObject);
+            unlock = true;
+
+            await unitOfWork.NeighborhoodActionRepository.InsertAsync(stopUpdatesAction);
+            await unitOfWork.SaveThrowAsync();
+          }
+          else
+          {
+            log.Warn("Neighbor ID '{0}' not found, probably it was deleted already.", NeighborId.ToHex());
+            res = true;
+          }
         }
         catch (Exception e)
         {
           log.Error("Exception occurred: {0}", e.ToString());
         }
 
-        unitOfWork.ReleaseLock(lockObject);
-      }*/
+        if (unlock) unitOfWork.ReleaseLock(lockObject);
+      }
 
       log.Trace("(-):{0}", res);
       return res;
@@ -892,12 +894,12 @@ namespace ProximityServer.Network
     /// <param name="NeighborId">Network identifier of the former neighbor server.</param>
     /// <param name="NeighborInfo">Serialized neighbor information.</param>
     /// <returns>true if the neighborhood action responsible for executing this method should be removed, false otherwise.</returns>
-    private async Task<bool> NeighborhoodRequestStopUpdates(byte[] NeighborId, string NeighborInfo)
+    private async Task<bool> NeighborhoodRequestStopUpdatesAsync(byte[] NeighborId, string NeighborInfo)
     {
       log.Trace("(NeighborId:'{0}',NeighborInfo:'{1}')", NeighborId.ToHex(), NeighborInfo);
 
       bool res = false;
-      /*
+
       Neighbor neighbor = null;
       IPAddress ipAddress = IPAddress.Any;
       try
@@ -918,30 +920,30 @@ namespace ProximityServer.Network
       }
 
       bool newNeighborPortObtained = false;
-      int srNeighborPort = neighbor.SrNeighborPort != null ? neighbor.SrNeighborPort.Value : 0;
+      int neighborPort = neighbor.NeighborPort != null ? neighbor.NeighborPort.Value : 0;
 
-      if (srNeighborPort == 0)
+      if (neighborPort == 0)
       {
-        srNeighborPort = await GetServerRolePortFromPrimaryPort(ipAddress, neighbor.PrimaryPort, ServerRoleType.SrNeighbor);
+        neighborPort = await GetServerRolePortFromPrimaryPort(ipAddress, neighbor.PrimaryPort, ServerRoleType.Neighbor);
         newNeighborPortObtained = true;
       }
 
-      if (srNeighborPort != 0)
+      if (neighborPort != 0)
       {
-        IPEndPoint endPoint = new IPEndPoint(ipAddress, srNeighborPort);
+        IPEndPoint endPoint = new IPEndPoint(ipAddress, neighborPort);
         using (OutgoingClient client = new OutgoingClient(endPoint, true, ShutdownSignaling.ShutdownCancellationTokenSource.Token))
         {
           bool connected = await client.ConnectAndVerifyIdentityAsync();
           if (!connected && !newNeighborPortObtained)
           {
             log.Debug("Failed to connect to neighbor ID '{0}' on address '{1}'. Trying to get new value of its srNeighborPort from its primaryPort.", NeighborId.ToHex(), endPoint);
-            int newSrNeighborPort = await GetServerRolePortFromPrimaryPort(ipAddress, neighbor.PrimaryPort, ServerRoleType.SrNeighbor);
+            int newSrNeighborPort = await GetServerRolePortFromPrimaryPort(ipAddress, neighbor.PrimaryPort, ServerRoleType.Neighbor);
             if (newSrNeighborPort != 0)
             {
               client.SetRemoteEndPoint(new IPEndPoint(ipAddress, newSrNeighborPort));
               connected = await client.ConnectAndVerifyIdentityAsync();
             }
-            else log.Debug("Failed to get srNeighborPort from primaryPort of neighbor ID '{0}'.", NeighborId.ToHex());
+            else log.Debug("Failed to get neighborPort from primaryPort of neighbor ID '{0}'.", NeighborId.ToHex());
           }
 
           if (connected)
@@ -949,7 +951,7 @@ namespace ProximityServer.Network
             if (client.MatchServerId(NeighborId))
             {
               ProxProtocolMessage requestMessage = client.MessageBuilder.CreateStopNeighborhoodUpdatesRequest();
-              if (!await client.SendStopNeighborhoodUpdates(requestMessage))
+              if (!await client.SendStopNeighborhoodUpdatesAsync(requestMessage))
               {
                 if (client.LastResponseStatus == Status.ErrorNotFound) log.Info("Neighbor ID '{0}' does not register us as followers.", NeighborId.ToHex());
                 else log.Warn("Sending update to neighbor ID '{0}' failed, error status {1}.", NeighborId.ToHex(), client.LastResponseStatus);
@@ -958,14 +960,14 @@ namespace ProximityServer.Network
             else log.Warn("Server identity differs from expected ID '{0}'.", NeighborId.ToHex());
           }
           else log.Info("Unable to initiate conversation with neighbor ID '{0}' on address '{1}'.", NeighborId.ToHex(), endPoint);
-
-          // In case of failure, we will not try again. The neighbor is deleted from our database 
-          // and hopefully will not send us any more updates. If it does, we will reject them.
-          res = true;
         }
       }
-      else log.Warn("Unable to find neighbor ID '{0}' IP and port information, will retry later.", NeighborId.ToHex());
-      */
+      else log.Warn("Unable to find neighbor ID '{0}' IP and port information.", NeighborId.ToHex());
+
+      // In case of failure, we will not try again. The neighbor is deleted from our database 
+      // and hopefully will not send us any more updates. If it does, we will reject them.
+      res = true;
+
       log.Trace("(-):{0}", res);
       return res;
     }
@@ -981,7 +983,7 @@ namespace ProximityServer.Network
     /// <param name="AdditionalData">Additional action data or null if action has no additional data.</param>
     /// <param name="ActionId">Identifier of the neighborhood action currently being executed.</param>
     /// <returns>true if the neighborhood action responsible for executing this method should be removed, false otherwise.</returns>
-    private async Task<bool> NeighborhoodActivityUpdate(byte[] FollowerId, uint ActivityId, byte[] OwnerIdentityId, NeighborhoodActionType ActionType, string AdditionalData, int ActionId)
+    private async Task<bool> NeighborhoodActivityUpdateAsync(byte[] FollowerId, uint ActivityId, byte[] OwnerIdentityId, NeighborhoodActionType ActionType, string AdditionalData, int ActionId)
     {
       log.Trace("(FollowerId:'{0}',ActivityId:{1},OwnerIdentityId:'{2}',ActionType:{3},AdditionalData:'{4}',ActionId:{5})", FollowerId.ToHex(), ActivityId, OwnerIdentityId.ToHex(), ActionType, AdditionalData, ActionId);
 
@@ -1051,7 +1053,7 @@ namespace ProximityServer.Network
                     // to deal with this somewhat rare case.
                     //
 
-#warning TODO: If we are implement data signing and verification, we have to make sure that Type "<INVALID>" is accepted without verification.
+#warning TODO: If we implement data signing and verification, we have to make sure that Type "<INVALID>" is accepted without verification.
                     byte[] identityPublicKey = AdditionalData.FromHex();
                     SharedActivityAddItem item = new SharedActivityAddItem()
                     {
@@ -1313,58 +1315,49 @@ namespace ProximityServer.Network
     /// <param name="Client">Client that received the request.</param>
     /// <param name="RequestMessage">Full request message.</param>
     /// <returns>Response message to be sent to the remote peer.</returns>
-    private async Task<ProxProtocolMessage> ProcessMessageNeighborhoodSharedActivityUpdateRequestAsync(OutgoingClient Client, ProxProtocolMessage RequestMessage)
+    private ProxProtocolMessage ProcessMessageNeighborhoodSharedActivityUpdateRequest(OutgoingClient Client, ProxProtocolMessage RequestMessage)
     {
       log.Trace("()");
 
       ProxMessageBuilder messageBuilder = Client.MessageBuilder;
       ProxProtocolMessage res = messageBuilder.CreateErrorInternalResponse(RequestMessage);
-      /*
+
       bool error = false;
-      NeighborhoodSharedActivityUpdateRequest neighborhoodSharedProfileUpdateRequest = RequestMessage.Request.ConversationRequest.NeighborhoodSharedProfileUpdate;
-      log.Debug("Received {0} update items.", neighborhoodSharedProfileUpdateRequest.Items.Count);
+      NeighborhoodSharedActivityUpdateRequest neighborhoodSharedActivityUpdateRequest = RequestMessage.Request.ConversationRequest.NeighborhoodSharedActivityUpdate;
+      log.Debug("Received {0} update items.", neighborhoodSharedActivityUpdateRequest.Items.Count);
 
-      Dictionary<byte[], NeighborIdentity> identityDatabase = (Dictionary<byte[], NeighborIdentity>)Client.Context;
+      Dictionary<string, NeighborActivity> activityDatabase = (Dictionary<string, NeighborActivity>)Client.Context;
       int itemIndex = 0;
-      foreach (SharedProfileUpdateItem updateItem in neighborhoodSharedProfileUpdateRequest.Items)
+      foreach (SharedActivityUpdateItem updateItem in neighborhoodSharedActivityUpdateRequest.Items)
       {
-        if (updateItem.ActionTypeCase == SharedProfileUpdateItem.ActionTypeOneofCase.Add)
+        if (updateItem.ActionTypeCase == SharedActivityUpdateItem.ActionTypeOneofCase.Add)
         {
-          SharedProfileAddItem addItem = updateItem.Add;
+          SharedActivityAddItem addItem = updateItem.Add;
           ProxProtocolMessage errorResponse;
-          if (ValidateInMemorySharedProfileAddItem(addItem, itemIndex, identityDatabase, Client.MessageBuilder, RequestMessage, out errorResponse))
+          if (ValidateInMemorySharedActivityAddItem(addItem, itemIndex, activityDatabase, Client.MessageBuilder, RequestMessage, out errorResponse))
           {
-            byte[] thumbnailImageHash = null;
-            byte[] thumbnailImageData = addItem.SetThumbnailImage ? addItem.ThumbnailImage.ToByteArray() : null;
-            if (thumbnailImageData != null)
-            {
-              thumbnailImageHash = Crypto.Sha256(thumbnailImageData);
-              if (!await ImageManager.SaveImageDataAsync(thumbnailImageHash, thumbnailImageData))
-              {
-                log.Error("Unable to save image hash '{0}' data to images directory.", thumbnailImageHash.ToHex());
-                error = true;
-                break;
-              }
-            }
-
-            byte[] pubKey = addItem.IdentityPublicKey.ToByteArray();
-            byte[] id = Crypto.Sha256(pubKey);
+            byte[] pubKey = addItem.OwnerPublicKey.ToByteArray();
+            byte[] ownerIdentityId = Crypto.Sha256(pubKey);
             GpsLocation location = new GpsLocation(addItem.Latitude, addItem.Longitude);
-            NeighborIdentity identity = new NeighborIdentity()
+            NeighborActivity activity = new NeighborActivity()
             {
-              IdentityId = id,
-              HostingServerId = Client.ServerId,
-              PublicKey = pubKey,
+              PrimaryServerId = Client.ServerId,
               Version = addItem.Version.ToByteArray(),
-              Name = addItem.Name,
+              ActivityId = addItem.Id,
+              OwnerIdentityId = ownerIdentityId,
+              OwnerPublicKey = pubKey,
+              OwnerProfileServerId = addItem.ProfileServerContact.NetworkId.ToByteArray(),
+              OwnerProfileServerIpAddress = addItem.ProfileServerContact.IpAddress.ToByteArray(),
+              OwnerProfileServerPrimaryPort = (ushort)addItem.ProfileServerContact.PrimaryPort,
               Type = addItem.Type,
-              InitialLocationLatitude = location.Latitude,
-              InitialLocationLongitude = location.Longitude,
-              ExtraData = addItem.ExtraData,
-              ExpirationDate = null,
-              ThumbnailImage = thumbnailImageHash
+              LocationLatitude = location.Latitude,
+              LocationLongitude = location.Longitude,
+              PrecisionRadius = addItem.Precision,
+              StartTime = ProtocolHelper.UnixTimestampMsToDateTime(addItem.StartTime).Value,
+              ExpirationTime = ProtocolHelper.UnixTimestampMsToDateTime(addItem.ExpirationTime).Value,
+              ExtraData = addItem.ExtraData
             };
-            identityDatabase.Add(identity.IdentityId, identity);
+            activityDatabase.Add(activity.GetFullId(), activity);
           }
           else
           {
@@ -1375,7 +1368,7 @@ namespace ProximityServer.Network
         }
         else
         {
-          log.Warn("Invalid profile update item action type '{0}' received during the neighborhood initialization process.", updateItem.ActionTypeCase);
+          log.Warn("Invalid activity update item action type '{0}' received during the neighborhood initialization process.", updateItem.ActionTypeCase);
           res = messageBuilder.CreateErrorInvalidValueResponse(RequestMessage, itemIndex.ToString() + ".actionType");
           error = true;
           break;
@@ -1384,43 +1377,42 @@ namespace ProximityServer.Network
         itemIndex++;
       }
 
-      // Setting Client.ForceDisconnect to true will cause newly added images to be deleted.
-      if (!error) res = messageBuilder.CreateNeighborhoodSharedProfileUpdateResponse(RequestMessage);
+      if (!error) res = messageBuilder.CreateNeighborhoodSharedActivityUpdateResponse(RequestMessage);
       else Client.ForceDisconnect = true;
-      */
+
       log.Trace("(-):*.Response.Status={0}", res.Response.Status);
       return res;
     }
 
-    /*
+    
     /// <summary>
-    /// Validates incoming SharedProfileAddItem update item.
+    /// Validates incoming SharedActivityAddItem update item.
     /// </summary>
     /// <param name="AddItem">Update item to validate.</param>
     /// <param name="Index">Index of the update item in the message.</param>
-    /// <param name="IdentityDatabase">In-memory temporary database of identities hosted on the neighbor server that were already received and processed.</param>
+    /// <param name="ActivityDatabase">In-memory temporary database of activities from the neighbor server that were already received and processed.</param>
     /// <param name="MessageBuilder">Client's network message builder.</param>
     /// <param name="RequestMessage">Full request message received by the client.</param>
     /// <param name="ErrorResponse">If the validation fails, this is filled with response message to be sent to the neighbor.</param>
     /// <returns>true if the validation is successful, false otherwise.</returns>
-    private bool ValidateInMemorySharedActivityAddItem(SharedActivityAddItem AddItem, int Index, Dictionary<byte[], NeighborIdentity> IdentityDatabase, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
+    private bool ValidateInMemorySharedActivityAddItem(SharedActivityAddItem AddItem, int Index, Dictionary<string, NeighborActivity> ActivityDatabase, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
     {
       log.Trace("(Index:{0})", Index);
-
+      
       bool res = false;
       ErrorResponse = null;
 
       string details = null;
-      if (IdentityDatabase.Count >= IdentityBase.MaxHostedIdentities)
+      if (ActivityDatabase.Count >= ActivityBase.MaxPrimaryActivities)
       {
-        log.Debug("Target server already sent too many profiles.");
+        log.Debug("Target server already sent too many activities.");
         details = "add";
       }
+
 
       if (details == null)
       {
         SemVer version = new SemVer(AddItem.Version);
-
         // Currently only supported version is 1.0.0.
         if (!version.Equals(SemVer.V100))
         {
@@ -1431,85 +1423,144 @@ namespace ProximityServer.Network
 
       if (details == null)
       {
-        byte[] pubKey = AddItem.IdentityPublicKey.ToByteArray();
-        bool pubKeyValid = (0 < pubKey.Length) && (pubKey.Length <= IdentityBase.MaxPublicKeyLengthBytes);
+        uint activityId = AddItem.Id;
+
+        // 0 is not a valid activity identifier.
+        if (activityId == 0)
+        {
+          log.Debug("Invalid activity ID '{0}'.", activityId);
+          details = "add.id";
+        }
+      }
+
+
+      if (details == null)
+      {
+        byte[] pubKey = AddItem.OwnerPublicKey.ToByteArray();
+        bool pubKeyValid = (0 < pubKey.Length) && (pubKey.Length <= ProtocolHelper.MaxPublicKeyLengthBytes);
         if (pubKeyValid)
         {
-          byte[] id = Crypto.Sha256(pubKey);
-          if (IdentityDatabase.ContainsKey(id))
+          byte[] identityId = Crypto.Sha256(pubKey);
+          NeighborActivity na = new NeighborActivity()
           {
-            log.Debug("Identity with public key '{0}' (ID '{1}') already exists.", pubKey.ToHex(), id.ToHex());
-            details = "add.identityPublicKey";
+            ActivityId = AddItem.Id,
+            OwnerIdentityId = identityId
+          };
+
+          string activityFullId = na.GetFullId();
+          if (ActivityDatabase.ContainsKey(activityFullId))
+          {
+            log.Debug("Activity full ID '{0}' (public key '{1}') already exists.", activityFullId, pubKey.ToHex());
+            details = "add.id";
           }
         }
         else
         {
           log.Debug("Invalid public key length '{0}'.", pubKey.Length);
-          details = "add.identityPublicKey";
+          details = "add.ownerPublicKey";
+        }
+      }
+
+
+      if (details == null)
+      {
+        ServerContactInfo sci = AddItem.ProfileServerContact;
+        bool networkIdValid = sci.NetworkId.Length == ProtocolHelper.NetworkIdentifierLength;
+        IPAddress ipAddress = IPAddressExtensions.IpFromBytes(sci.IpAddress.ToByteArray());
+        bool ipAddressValid = (ipAddress != null) && (Config.Configuration.TestModeEnabled || !ipAddress.IsReservedOrLocal());
+        bool portValid = (1 <= sci.PrimaryPort) && (sci.PrimaryPort <= 65535);
+
+        if (!networkIdValid || !ipAddressValid || !portValid)
+        {
+          log.Debug("Profile server contact's network ID is {0}, IP address is {1}, port is {2}.", networkIdValid ? "valid" : "invalid", ipAddressValid ? "valid" : "invalid", portValid ? "valid" : "invalid");
+
+          if (!networkIdValid) details = "add.profileServerContact.networkId";
+          else if (!ipAddressValid) details = "add.profileServerContact.ipAddress";
+          else if (!portValid) details = "add.profileServerContact.primaryPort";
         }
       }
 
       if (details == null)
       {
-        int nameSize = Encoding.UTF8.GetByteCount(AddItem.Name);
-        bool nameValid = !string.IsNullOrEmpty(AddItem.Name) && (nameSize <= IdentityBase.MaxProfileNameLengthBytes);
-        if (!nameValid)
-        {
-          log.Debug("Invalid name size in bytes {0}.", nameSize);
-          details = "add.name";
-        }
-      }
+        string activityType = AddItem.Type;
+        if (activityType == null) activityType = "";
 
-      if (details == null)
-      {
-        int typeSize = Encoding.UTF8.GetByteCount(AddItem.Type);
-        bool typeValid = (0 < typeSize) && (typeSize <= IdentityBase.MaxProfileTypeLengthBytes);
-        if (!typeValid)
+        int byteLen = Encoding.UTF8.GetByteCount(activityType);
+        if (byteLen > ActivityBase.MaxActivityTypeLengthBytes)
         {
-          log.Debug("Invalid type size in bytes {0}.", typeSize);
+          log.Debug("Activity type too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityTypeLengthBytes);
           details = "add.type";
-        }
-      }
-
-      if ((details == null) && AddItem.SetThumbnailImage)
-      {
-        byte[] thumbnailImage = AddItem.ThumbnailImage.ToByteArray();
-
-        bool imageValid = (thumbnailImage.Length <= IdentityBase.MaxThumbnailImageLengthBytes) && ImageManager.ValidateImageFormat(thumbnailImage);
-        if (!imageValid)
-        {
-          log.Debug("Invalid thumbnail image.");
-          details = "add.thumbnailImage";
         }
       }
 
       if (details == null)
       {
         GpsLocation locLat = new GpsLocation(AddItem.Latitude, 0);
+        GpsLocation locLong = new GpsLocation(0, AddItem.Longitude);
         if (!locLat.IsValid())
         {
-          log.Debug("Invalid latitude {0}.", AddItem.Latitude);
+          log.Debug("Latitude '{0}' is not a valid GPS latitude value.", AddItem.Latitude);
           details = "add.latitude";
         }
-      }
-
-      if (details == null)
-      {
-        GpsLocation locLon = new GpsLocation(0, AddItem.Longitude);
-        if (!locLon.IsValid())
+        else if (!locLong.IsValid())
         {
-          log.Debug("Invalid longitude {0}.", AddItem.Longitude);
+          log.Debug("Longitude '{0}' is not a valid GPS longitude value.", AddItem.Longitude);
           details = "add.longitude";
         }
       }
 
       if (details == null)
       {
-        int extraDataSize = Encoding.UTF8.GetByteCount(AddItem.ExtraData);
-        bool extraDataValid = extraDataSize <= IdentityBase.MaxProfileExtraDataLengthBytes;
-        if (!extraDataValid)
+        uint precision = AddItem.Precision;
+        bool precisionValid = (0 <= precision) && (precision <= ActivityBase.MaxLocationPrecision);
+        if (!precisionValid)
         {
-          log.Debug("Invalid extraData size in bytes {0}.", extraDataSize);
+          log.Debug("Precision '{0}' is not an integer between 0 and {1}.", precision, ActivityBase.MaxLocationPrecision);
+          details = "add.precision";
+        }
+      }
+
+
+      if (details == null)
+      {
+        DateTime? startTime = ProtocolHelper.UnixTimestampMsToDateTime(AddItem.StartTime);
+        DateTime? expirationTime = ProtocolHelper.UnixTimestampMsToDateTime(AddItem.ExpirationTime);
+
+        if (startTime == null)
+        {
+          log.Debug("Invalid activity start time timestamp '{0}'.", AddItem.StartTime);
+          details = "add.startTime";
+        }
+        else if (expirationTime == null)
+        {
+          log.Debug("Invalid activity expiration time timestamp '{0}'.", AddItem.ExpirationTime);
+          details = "add.expirationTime";
+        }
+        else
+        {
+          if (startTime > expirationTime)
+          {
+            log.Debug("Activity expiration time has to be greater than or equal to its start time.");
+            details = "add.expirationTime";
+          }
+          else if (expirationTime.Value > DateTime.UtcNow.AddHours(ActivityBase.MaxActivityLifeTimeHours))
+          {
+            log.Debug("Activity expiration time {0} is more than {1} hours in the future.", expirationTime.Value.ToString("yyyy-MM-dd HH:mm:ss"), ActivityBase.MaxActivityLifeTimeHours);
+            details = "add.expirationTime";
+          }
+        }
+      }
+
+      if (details == null)
+      {
+        string extraData = AddItem.ExtraData;
+        if (extraData == null) extraData = "";
+
+        // Extra data is semicolon separated 'key=value' list, max ActivityBase.MaxActivityExtraDataLengthBytes bytes long.
+        int byteLen = Encoding.UTF8.GetByteCount(extraData);
+        if (byteLen > ActivityBase.MaxActivityExtraDataLengthBytes)
+        {
+          log.Debug("Extra data too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityExtraDataLengthBytes);
           details = "add.extraData";
         }
       }
@@ -1520,15 +1571,15 @@ namespace ProximityServer.Network
         res = true;
       }
       else ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, Index.ToString() + "." + details);
-      
-    log.Trace("(-):{0}", res);
+
+      log.Trace("(-):{0}", res);
       return res;
     }
 
-      */
+
     /// <summary>
-    /// Processes FinishNeighborhoodInitializationRequest message from client sent during neighborhood initialization process.
-    /// <para>Saves the temporary in-memory database of activities to the database and moves the relevant images from the temporary directory to the images directory.</para>
+    /// Processes FinishNeighborhoodInitializationRequest message from neighbor server sent during neighborhood initialization process.
+    /// <para>Saves the temporary in-memory database of activities to the database.</para>
     /// </summary>
     /// <param name="Client">Client that received the request.</param>
     /// <param name="RequestMessage">Full request message.</param>
@@ -1539,61 +1590,22 @@ namespace ProximityServer.Network
 
       ProxMessageBuilder messageBuilder = Client.MessageBuilder;
       ProxProtocolMessage res = messageBuilder.CreateErrorInternalResponse(RequestMessage);
-      /*
+
       FinishNeighborhoodInitializationRequest finishNeighborhoodInitializationRequest = RequestMessage.Request.ConversationRequest.FinishNeighborhoodInitialization;
 
-      bool error = false;
-      Dictionary<byte[], NeighborIdentity> identityDatabase = (Dictionary<byte[], NeighborIdentity>)Client.Context;
+      bool success = false;
+      Dictionary<string, NeighborActivity> activityDatabase = (Dictionary<string, NeighborActivity>)Client.Context;
 
-      // Save new identities to the database.
+      // Save new activities to the database.
       using (UnitOfWork unitOfWork = new UnitOfWork())
       {
-        bool success = false;
-        DatabaseLock[] lockObjects = new DatabaseLock[] { UnitOfWork.NeighborIdentityLock, UnitOfWork.NeighborLock };
-        using (IDbContextTransaction transaction = await unitOfWork.BeginTransactionWithLockAsync(lockObjects))
-        {
-          try
-          {
-            Neighbor neighbor = (await unitOfWork.NeighborRepository.GetAsync(n => n.NeighborId == Client.ServerId)).FirstOrDefault();
-            if (neighbor != null)
-            {
-              // The neighbor is now initialized and is allowed to send us updates.
-              neighbor.LastRefreshTime = DateTime.UtcNow;
-              neighbor.SharedProfiles = identityDatabase.Count;
-              unitOfWork.NeighborRepository.Update(neighbor);
-
-              // Insert all its identities.
-              foreach (NeighborIdentity identity in identityDatabase.Values)
-                await unitOfWork.NeighborIdentityRepository.InsertAsync(identity);
-
-              await unitOfWork.SaveThrowAsync();
-              transaction.Commit();
-              success = true;
-            }
-            else log.Error("Unable to find neighbor ID '{0}'.", Client.ServerId.ToHex());
-          }
-          catch (Exception e)
-          {
-            log.Error("Exception occurred: {0}", e.ToString());
-          }
-
-          if (!success)
-          {
-            log.Warn("Rolling back transaction.");
-            unitOfWork.SafeTransactionRollback(transaction);
-            error = true;
-          }
-
-          unitOfWork.ReleaseLock(lockObjects);
-        }
+        success = await unitOfWork.NeighborRepository.SaveNeighborhoodInitializationActivitiesAsync(activityDatabase, Client.ServerId);
       }
 
 
-      // If there was an error, we delete all relevant image files, this is done in NeighborhoodInitializationProcess
-      // when Client.ForceDisconnect is true or any other error occurs.
-      if (!error) res = messageBuilder.CreateFinishNeighborhoodInitializationResponse(RequestMessage);
+      if (success) res = messageBuilder.CreateFinishNeighborhoodInitializationResponse(RequestMessage);
       else Client.ForceDisconnect = true;
-      */
+
       log.Trace("(-):*.Response.Status={0}", res.Response.Status);
       return res;
     }

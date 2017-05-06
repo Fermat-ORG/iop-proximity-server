@@ -187,7 +187,7 @@ namespace ProximityServer.Network
     {
       log.Trace("(IsInitialization:{0})", IsInitialization);
 
-      bool res = false;/*
+      bool res = false;
       bool signalActionProcessor = false;
 
       GetNeighbourNodesByDistanceResponse getNeighbourNodesByDistanceResponse = ResponseMessage.Response.LocalService.GetNeighbourNodes;
@@ -219,7 +219,7 @@ namespace ProximityServer.Network
                 int latitude = nodeInfo.Location.Latitude;
                 int longitude = nodeInfo.Location.Longitude;
 
-                AddOrChangeNeighborResult addChangeRes = await AddOrChangeNeighbor(unitOfWork, proximityServerId, ipAddress, proximityServerPort, latitude, longitude, neighborhoodSize);
+                AddOrChangeNeighborResult addChangeRes = await AddOrChangeNeighborAsync(unitOfWork, proximityServerId, ipAddress, proximityServerPort, latitude, longitude, neighborhoodSize);
 
                 neighborhoodSize = addChangeRes.NeighborhoodSize;
 
@@ -272,7 +272,7 @@ namespace ProximityServer.Network
         log.Debug("LOC component is now considered in sync with LOC server.");
         serverComponent.SetLocServerInitialized(true);
       }
-      */
+
       log.Trace("(-):{0}", res);
       return res;
     }
@@ -306,13 +306,13 @@ namespace ProximityServer.Network
     /// <param name="NeighborhoodSize">Size of the proximity server's neighborhood at the moment the function is called.</param>
     /// <returns>Information related to how should the caller proceed further, described in AddOrChangeNeighborResult structure.</returns>
     /// <remarks>The caller is responsible for calling this function within a database transaction with NeighborLock and NeighborhoodActionLock locks.</remarks>
-    public async Task<AddOrChangeNeighborResult> AddOrChangeNeighbor(UnitOfWork UnitOfWork, byte[] ServerId, IPAddress IpAddress, int Port, int Latitude, int Longitude, int NeighborhoodSize)
+    public async Task<AddOrChangeNeighborResult> AddOrChangeNeighborAsync(UnitOfWork UnitOfWork, byte[] ServerId, IPAddress IpAddress, int Port, int Latitude, int Longitude, int NeighborhoodSize)
     {
       log.Trace("(ServerId:'{0}',IpAddress:{1},Port:{2},Latitude:{3},Longitude:{4},NeighborhoodSize:{5})", ServerId.ToHex(), IpAddress, Port, Latitude, Longitude, NeighborhoodSize);
 
       AddOrChangeNeighborResult res = new AddOrChangeNeighborResult();
       res.NeighborhoodSize = NeighborhoodSize;
-      /*
+
       // Data validation.
       bool serverIdValid = ServerId.Length == ProtocolHelper.NetworkIdentifierLength;
       if (!serverIdValid)
@@ -359,7 +359,7 @@ namespace ProximityServer.Network
             NeighborId = ServerId,
             IpAddress = IpAddress.ToString(),
             PrimaryPort = Port,
-            SrNeighborPort = null,
+            NeighborPort = null,
             LocationLatitude = location.Latitude,
             LocationLongitude = location.Longitude,
             LastRefreshTime = null,
@@ -379,7 +379,8 @@ namespace ProximityServer.Network
             Timestamp = DateTime.UtcNow,
             Type = NeighborhoodActionType.AddNeighbor,
             ExecuteAfter = DateTime.UtcNow.AddSeconds(delay),
-            TargetIdentityId = null,
+            TargetActivityId = 0,
+            TargetActivityOwnerId = null,
             AdditionalData = null,
           };
           await UnitOfWork.NeighborhoodActionRepository.InsertAsync(action);
@@ -404,7 +405,7 @@ namespace ProximityServer.Network
           // Primary port was change, so we also expect that the neighbors interface port was changed as well.
           log.Trace("Existing neighbor ID '{0}' changed its primary port from {1} to {2}, invalidating neighbors interface port as well.", ServerId.ToHex(), existingNeighbor.PrimaryPort, Port);
           existingNeighbor.PrimaryPort = Port;
-          existingNeighbor.SrNeighborPort = null;
+          existingNeighbor.NeighborPort = null;
         }
 
         if (existingNeighbor.LocationLatitude != location.Latitude)
@@ -425,7 +426,7 @@ namespace ProximityServer.Network
 
         UnitOfWork.NeighborRepository.Update(existingNeighbor);
         res.SaveDb = true;
-      }*/
+      }
 
       log.Trace("(-):*.Error={0},*.SaveDb={1},*.SignalActionProcessor={2},*.NeighborhoodSize={3}", res.Error, res.SaveDb, res.SignalActionProcessor, res.NeighborhoodSize);
       return res;
@@ -434,7 +435,7 @@ namespace ProximityServer.Network
 
     /// <summary>
     /// Processes NeighbourhoodChangedNotificationRequest message from LOC server.
-    /// <para>Adds corresponding neighborhood action to the database.</para>
+    /// <para>Adds, changes, or deletes neighbor and possibly adds new neighborhood action to the database.</para>
     /// </summary>
     /// <param name="Client">TCP client who received the message.</param>
     /// <param name="RequestMessage">Full request message.</param>
@@ -442,8 +443,8 @@ namespace ProximityServer.Network
     public async Task<LocProtocolMessage> ProcessMessageNeighbourhoodChangedNotificationRequestAsync(LocClient Client, LocProtocolMessage RequestMessage)
     {
       log.Trace("()");
-      
-      LocProtocolMessage res = Client.MessageBuilder.CreateErrorInternalResponse(RequestMessage);/*
+
+      LocProtocolMessage res = Client.MessageBuilder.CreateErrorInternalResponse(RequestMessage);
       bool signalActionProcessor = false;
 
       NeighbourhoodChangedNotificationRequest neighbourhoodChangedNotificationRequest = RequestMessage.Request.LocalService.NeighbourhoodChanged;
@@ -461,7 +462,7 @@ namespace ProximityServer.Network
 
             foreach (NeighbourhoodChange change in neighbourhoodChangedNotificationRequest.Changes)
             {
-              // We do ignore errors here for each individual change and just continue processing a next item from the list.
+              // We do ignore errors here for each individual change and just continue processing the next item from the list.
               log.Trace("Neighborhood change type is {0}.", change.ChangeTypeCase);
               switch (change.ChangeTypeCase)
               {
@@ -483,7 +484,7 @@ namespace ProximityServer.Network
                     int latitude = location.Latitude;
                     int longitude = location.Longitude;
 
-                    AddOrChangeNeighborResult addChangeRes = await AddOrChangeNeighbor(unitOfWork, proximityServerId, ipAddress, proximityServerPort, latitude, longitude, neighborhoodSize);
+                    AddOrChangeNeighborResult addChangeRes = await AddOrChangeNeighborAsync(unitOfWork, proximityServerId, ipAddress, proximityServerPort, latitude, longitude, neighborhoodSize);
 
                     neighborhoodSize = addChangeRes.NeighborhoodSize;
 
@@ -517,7 +518,7 @@ namespace ProximityServer.Network
 
                       // Delete neighbor completely.
                       // This will cause our proximity server to erase all activities of the neighbor that has been removed.
-                      bool deleted = await unitOfWork.NeighborRepository.DeleteNeighbor(unitOfWork, serverId, -1, true);
+                      bool deleted = await unitOfWork.NeighborRepository.DeleteNeighborAsync(serverId, -1, true);
                       if (deleted)
                       {
                         // Add action that will contact the neighbor and ask it to stop sending updates.
@@ -526,10 +527,11 @@ namespace ProximityServer.Network
                         NeighborhoodAction stopUpdatesAction = new NeighborhoodAction()
                         {
                           ServerId = serverId,
-                          Type = NeighborhoodActionType.StopNeighborhoodUpdates,
-                          TargetIdentityId = null,
-                          ExecuteAfter = DateTime.UtcNow,
                           Timestamp = DateTime.UtcNow,
+                          Type = NeighborhoodActionType.StopNeighborhoodUpdates,
+                          TargetActivityId = 0,
+                          TargetActivityOwnerId = null,
+                          ExecuteAfter = DateTime.UtcNow,
                           AdditionalData = neighborInfo
                         };
                         await unitOfWork.NeighborhoodActionRepository.InsertAsync(stopUpdatesAction);
@@ -547,7 +549,8 @@ namespace ProximityServer.Network
                           ServerId = serverId,
                           Timestamp = DateTime.UtcNow,
                           Type = NeighborhoodActionType.RemoveNeighbor,
-                          TargetIdentityId = null,
+                          TargetActivityId = 0,
+                          TargetActivityOwnerId = null,
                           AdditionalData = null
                         };
                         await unitOfWork.NeighborhoodActionRepository.InsertAsync(action);
@@ -561,7 +564,7 @@ namespace ProximityServer.Network
                       log.Debug("Neighbor ID '{0}' not found, can not be removed.", serverId.ToHex());
                       // It can be the case that this node has not an associated proximity server, so in that case we should ignore it.
                       // If the node has an associated proximity server, then nothing bad really happens here if we have activities 
-                      // of such a neighbor in NeighborIdentity table. Those entries will expire and will be deleted.
+                      // of such a neighbor in NeighborActivity table. Those entries will expire and will be deleted.
                     }
                     break;
                   }
@@ -599,7 +602,7 @@ namespace ProximityServer.Network
       {
         NeighborhoodActionProcessor neighborhoodActionProcessor = (NeighborhoodActionProcessor)Base.ComponentDictionary[NeighborhoodActionProcessor.ComponentName];
         neighborhoodActionProcessor.Signal();
-      }*/
+      }
 
       log.Trace("(-):*.Response.Status={0}", res.Response.Status);
       return res;
@@ -611,8 +614,8 @@ namespace ProximityServer.Network
     /// Checks whether LOC node information contains a Proximity Server service and if so, it returns its port and network ID.
     /// </summary>
     /// <param name="NodeInfo">Node information structure to scan.</param>
-    /// <param name="ProximityServerPort">If the node information contains Proximity Server type of service, this is filled with the Proximity Server port.</param>
-    /// <param name="ProximityServerId">If the node information contains Proximity Server type of service, this is filled with the Proximity Server network ID.</param>
+    /// <param name="ProximityServerPort">If the node information contains Proximity Server type of service, this is filled with the proximity server primary port.</param>
+    /// <param name="ProximityServerId">If the node information contains Proximity Server type of service, this is filled with the proximity erver network ID.</param>
     /// <returns>true if the node information contains Proximity Server type of service, false otherwise.</returns>
     public bool HasProximityServerService(NodeInfo NodeInfo, out int ProximityServerPort, out byte[] ProximityServerId)
     {
@@ -620,7 +623,7 @@ namespace ProximityServer.Network
 
       bool res = false;
       ProximityServerPort = 0;
-      ProximityServerId = null;/*
+      ProximityServerId = null;
       foreach (ServiceInfo si in NodeInfo.Services)
       {
         if (si.Type == ServiceType.Proximity)
@@ -641,11 +644,10 @@ namespace ProximityServer.Network
 
           break;
         }
-      }*/
+      }
 
       log.Trace("(-):{0}", res);
       return res;
     }
-
   }
 }

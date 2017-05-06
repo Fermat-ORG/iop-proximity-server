@@ -17,6 +17,7 @@ using IopCommon;
 using IopServerCore.Network;
 using Google.Protobuf;
 using Iop.Shared;
+using IopServerCore.Kernel;
 
 namespace ProximityServer.Network
 {
@@ -373,20 +374,21 @@ namespace ProximityServer.Network
       log.Trace("(-):{0}", res);
       return res;
     }
-    /*
+    
 
     /// <summary>
     /// Sends StartNeighborhoodInitializationRequest to the server and reads a response.
     /// </summary>
     /// <param name="PrimaryPort">Primary interface port of the requesting proximity server.</param>
-    /// <param name="SrNeighborPort">Neighbors interface port of the requesting proximity server.</param>
+    /// <param name="NeighborPort">Neighbors interface port of the requesting proximity server.</param>
     /// <returns>true if the function succeeds, false otherwise.</returns>
-    public async Task<bool> StartNeighborhoodInitializationAsync(uint PrimaryPort, uint SrNeighborPort)
+    public async Task<bool> StartNeighborhoodInitializationAsync(uint PrimaryPort, uint NeighborPort)
     {
       log.Trace("()");
 
       bool res = false;
-      ProxProtocolMessage requestMessage = MessageBuilder.CreateStartNeighborhoodInitializationRequest(PrimaryPort, SrNeighborPort);
+      Config config = (Config)Base.ComponentDictionary[ConfigBase.ComponentName];
+      ProxProtocolMessage requestMessage = MessageBuilder.CreateStartNeighborhoodInitializationRequest(PrimaryPort, NeighborPort, config.ExternalServerAddress);
       if (await SendMessageAsync(requestMessage))
       {
         ProxProtocolMessage responseMessage = await ReceiveMessageAsync();
@@ -405,7 +407,7 @@ namespace ProximityServer.Network
       log.Trace("(-):{0}", res);
       return res;
     }
-    */
+    
 
 
     /// <summary>
@@ -438,7 +440,6 @@ namespace ProximityServer.Network
       return res;
     }
 
-    /*
 
 
     /// <summary>
@@ -446,7 +447,7 @@ namespace ProximityServer.Network
     /// </summary>
     /// <param name="RequestMessage">Request message to send.</param>
     /// <returns>true if the function succeeds, false otherwise.</returns>
-    public async Task<bool> SendStopNeighborhoodUpdates(ProxProtocolMessage RequestMessage)
+    public async Task<bool> SendStopNeighborhoodUpdatesAsync(ProxProtocolMessage RequestMessage)
     {
       log.Trace("()");
 
@@ -471,7 +472,7 @@ namespace ProximityServer.Network
       return res;
     }
 
-  */
+  
     /// <summary>
     /// Sends ListRolesRequest to the server and reads a response.
     /// </summary>

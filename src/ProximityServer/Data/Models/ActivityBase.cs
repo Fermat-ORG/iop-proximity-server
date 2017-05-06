@@ -149,5 +149,16 @@ namespace ProximityServer.Data.Models
       LocationLatitude = Location.Latitude;
       LocationLongitude = Location.Longitude;
     }
+
+
+    /// <summary>
+    /// Constructs a string representation of the activity's full ID, which is network ID of its owner identity 
+    /// concatenated with its activity ID. This should be unique in the entire network.
+    /// </summary>
+    /// <returns>String representation of full activity ID.</returns>
+    public string GetFullId()
+    {
+      return string.Format("{0}-{1}", OwnerIdentityId.ToHex(), ActivityId);
+    }
   }
 }
