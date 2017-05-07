@@ -1,5 +1,8 @@
 ﻿using System.Threading.Tasks;
 using IopCommon;
+using Iop.Proximityserver;
+using IopProtocol;
+using IopCrypto;
 
 namespace ProximityServer.Data.Models
 {

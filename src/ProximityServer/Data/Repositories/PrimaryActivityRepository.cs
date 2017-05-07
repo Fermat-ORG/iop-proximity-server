@@ -131,79 +131,94 @@ namespace ProximityServer.Data.Repositories
 
     /// <summary>
     /// Updates an existing activity in the database. Then a new neighborhood action is created to propagate the changes to the neighborhood 
-    /// if this is required.
+    /// if this is required. If the update is rejected, the action is deleted from the database and this is propagated to the neighborhood.
     /// <para>Note that the change in activity is not propagated if the client sets no propagation flag in the request, or if only the activity 
     /// expiration date or its location is changed.</para>
     /// </summary>
     /// <param name="UpdateRequest">Update request received from the client.</param>
     /// <param name="OwnerIdentityId">Network ID of the client who requested the update.</param>
+    /// <param name="NearestServerId">If the result is Status.ErrorRejected, this is filled with network identifier of a neighbor server that is nearest to the target location.</param>
     /// <returns>Status.Ok if the function succeeds, 
     /// Status.ErrorNotFound if the activity to update does not exist,
-    /// Status.ErrorInvalidValue if the new activity's start time is greater than its new expiration time,
+    /// Status.ErrorRejected if the update was rejected and the client should migrate the activity to closest proximity server,
     /// Status.ErrorInternal otherwise.</returns>
-    public async Task<Iop.Shared.Status> UpdateAndPropagateAsync(UpdateActivityRequest UpdateRequest, byte[] OwnerIdentityId)
+    public async Task<Iop.Shared.Status> UpdateAndPropagateAsync(UpdateActivityRequest UpdateRequest, byte[] OwnerIdentityId, StrongBox<byte[]> NearestServerId)
     {
-      log.Trace("(UpdateRequest.Id:{0},OwnerIdentityId:'{1}')", UpdateRequest.Id, OwnerIdentityId.ToHex());
+      log.Trace("(UpdateRequest.Activity.Id:{0},OwnerIdentityId:'{1}')", UpdateRequest.Activity.Id, OwnerIdentityId.ToHex());
 
       Iop.Shared.Status res = Iop.Shared.Status.ErrorInternal;
 
       bool success = false;
       bool signalNeighborhoodAction = false;
+      bool migrateActivity = false;
+      ActivityInformation activityInformation = UpdateRequest.Activity;
       DatabaseLock[] lockObjects = new DatabaseLock[] { UnitOfWork.PrimaryActivityLock, UnitOfWork.FollowerLock, UnitOfWork.NeighborhoodActionLock };
       using (IDbContextTransaction transaction = await unitOfWork.BeginTransactionWithLockAsync(lockObjects))
       {
         try
         {
-          PrimaryActivity existingActivity = (await GetAsync(a => (a.ActivityId == UpdateRequest.Id) && (a.OwnerIdentityId == OwnerIdentityId))).FirstOrDefault();
+          PrimaryActivity existingActivity = (await GetAsync(a => (a.ActivityId == activityInformation.Id) && (a.OwnerIdentityId == OwnerIdentityId))).FirstOrDefault();
           if (existingActivity != null)
           {
-            if (UpdateRequest.SetStartTime)
-              existingActivity.StartTime = ProtocolHelper.UnixTimestampMsToDateTime(UpdateRequest.StartTime).Value;
+            // First, we check whether the activity should be migrated to closer proximity server.
+            GpsLocation oldLocation = existingActivity.GetLocation();
+            GpsLocation newLocation = new GpsLocation(activityInformation.Latitude, activityInformation.Longitude);
+            bool locationChanged = !oldLocation.Equals(newLocation);
 
-            if (UpdateRequest.SetExpirationTime)
-              existingActivity.ExpirationTime = ProtocolHelper.UnixTimestampMsToDateTime(UpdateRequest.ExpirationTime).Value;
-
-
-            bool expirationTimeValid = existingActivity.StartTime <= existingActivity.ExpirationTime;
-            if (expirationTimeValid)
+            bool error = false;
+            if (locationChanged)
             {
-              if (UpdateRequest.SetLocation)
+              StrongBox<byte[]> nearestServerId = new StrongBox<byte[]>(null);
+              List<byte[]> ignoreServerIds = new List<byte[]>(UpdateRequest.IgnoreServerIds.Select(i => i.ToByteArray()));
+              if (!await unitOfWork.NeighborRepository.IsServerNearestToLocationAsync(newLocation, ignoreServerIds, nearestServerId, ProxMessageBuilder.ActivityMigrationDistanceTolerance))
               {
-                GpsLocation activityLocation = new GpsLocation(UpdateRequest.Latitude, UpdateRequest.Longitude);
-                existingActivity.LocationLatitude = activityLocation.Latitude;
-                existingActivity.LocationLongitude = activityLocation.Longitude;
+                if (nearestServerId.Value != null)
+                {
+                  migrateActivity = true;
+                  log.Debug("Activity's new location is outside the reach of this proximity server, the activity will be deleted from the database.");
+                }
+                else error = true;
               }
-
-              if (UpdateRequest.SetPrecision)
-                existingActivity.PrecisionRadius = UpdateRequest.Precision;
-
-              if (UpdateRequest.SetExtraData)
-                existingActivity.ExtraData = UpdateRequest.ExtraData;
-
-              Update(existingActivity);
-
-
-              bool propagateChange = !UpdateRequest.NoPropagation && (UpdateRequest.SetStartTime || UpdateRequest.SetPrecision || UpdateRequest.SetExtraData);
-              if (propagateChange)
-              {
-                // The activity has to be propagated to all our followers we create database actions that will be processed by dedicated thread.
-                signalNeighborhoodAction = await unitOfWork.NeighborhoodActionRepository.AddActivityFollowerActionsAsync(NeighborhoodActionType.ChangeActivity, existingActivity.ActivityId, existingActivity.OwnerIdentityId, UpdateRequest.ToString());
-              }
-              else log.Trace("Change of activity ID {0}, owner identity ID '{1}' won't be propagated to neighborhood.", existingActivity.ActivityId, existingActivity.OwnerIdentityId);
-
-              await unitOfWork.SaveThrowAsync();
-              transaction.Commit();
-              success = true;
+              // else No migration needed
             }
-            else 
+
+            if (!error)
             {
-              log.Debug("Activity new start time {0} is greater than its new expiration time {1}.", existingActivity.StartTime.ToString("yyyy-MM-dd HH:mm:ss"), existingActivity.ExpirationTime.ToString("yyyy-MM-dd HH:mm:ss"));
-              res = Iop.Shared.Status.ErrorInvalidValue;
+              // If it should not be migrated, we update the activity in our database.
+              if (!migrateActivity)
+              {
+                bool propagateChange = false;
+                if (!UpdateRequest.NoPropagation)
+                {
+                  PrimaryActivity updatedActivity = ActivityBase.FromActivityInformation<PrimaryActivity>(activityInformation);
+                  ActivityChange changes = existingActivity.CompareChangeTo(updatedActivity);
+                  
+                  // If only changes in the activity are related to location or expiration time, the activity update is not propagated to the neighborhood.
+                  propagateChange = (changes & ~(ActivityChange.LocationLatitude | ActivityChange.LocationLongitude | ActivityChange.ExpirationTime)) != 0;
+                }
+
+                existingActivity.CopyFromActivityInformation(activityInformation);
+
+                Update(existingActivity);
+
+                if (propagateChange)
+                {
+                  // The activity has to be propagated to all our followers we create database actions that will be processed by dedicated thread.
+                  signalNeighborhoodAction = await unitOfWork.NeighborhoodActionRepository.AddActivityFollowerActionsAsync(NeighborhoodActionType.ChangeActivity, existingActivity.ActivityId, existingActivity.OwnerIdentityId);
+                }
+                else log.Trace("Change of activity ID {0}, owner identity ID '{1}' won't be propagated to neighborhood.", existingActivity.ActivityId, existingActivity.OwnerIdentityId);
+
+                await unitOfWork.SaveThrowAsync();
+                transaction.Commit();
+                success = true;
+              }
+              // else this is handled below separately, out of locked section
             }
+            // else Internal error
           }
           else
           {
-            log.Debug("Activity ID {0}, owner identity ID '{1}' does not exist.", UpdateRequest.Id, OwnerIdentityId);
+            log.Debug("Activity ID {0}, owner identity ID '{1}' does not exist.", activityInformation.Id, OwnerIdentityId);
             res = Iop.Shared.Status.ErrorNotFound;
           }
         }
@@ -219,6 +234,27 @@ namespace ProximityServer.Data.Repositories
         }
 
         unitOfWork.ReleaseLock(lockObjects);
+      }
+
+
+      if (migrateActivity)
+      {
+        // If activity should be migrated, we delete it from our database and inform our neighbors.
+        StrongBox<bool> notFound = new StrongBox<bool>(false);
+        if (await DeleteAndPropagateAsync(activityInformation.Id, OwnerIdentityId, notFound))
+        {
+          if (!notFound.Value)
+          {
+            // The activity was deleted from the database and this change will be propagated to the neighborhood.
+            log.Debug("Update rejected, activity ID {0}, owner identity ID '{1}' deleted.", activityInformation.Id, OwnerIdentityId);
+            res = Iop.Shared.Status.ErrorRejected;
+          }
+          else
+          {
+            // Activity of given ID not found among activities created by the client.
+            res = Iop.Shared.Status.ErrorNotFound;
+          }
+        }
       }
 
       if (success)

@@ -1,4 +1,6 @@
-﻿using IopCommon;
+﻿using Iop.Proximityserver;
+using IopCommon;
+using IopCrypto;
 using IopProtocol;
 using System.ComponentModel.DataAnnotations;
 
@@ -16,5 +18,21 @@ namespace ProximityServer.Data.Models
     [Required]
     [MaxLength(ProtocolHelper.NetworkIdentifierLength)]
     public byte[] PrimaryServerId { get; set; }
+
+
+    /// <summary>
+    /// Compares this activity to other activity and returns list of changed properties.
+    /// </summary>
+    /// <param name="Other">Other activity to compare to.</param>
+    /// <returns>Bit mask information about which properties are different.</returns>
+    public ActivityChange CompareChangeTo(NeighborActivity Other)
+    {
+      ActivityChange res = base.CompareChangeTo(Other);
+
+      if (!StructuralEqualityComparer<byte[]>.Default.Equals(this.PrimaryServerId, Other.PrimaryServerId))
+        res |= ActivityChange.PrimaryServerId;
+
+      return res;
+    }
   }
 }

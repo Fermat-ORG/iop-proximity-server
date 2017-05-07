@@ -703,12 +703,13 @@ namespace ProximityServer.Network
 
       ProxMessageBuilder messageBuilder = Client.MessageBuilder;
       CreateActivityRequest createActivityRequest = RequestMessage.Request.ConversationRequest.CreateActivity;
+      ActivityInformation activityInformation = createActivityRequest.Activity;
 
       res = messageBuilder.CreateErrorInternalResponse(RequestMessage);
       ProxProtocolMessage errorResponse;
-      if (ValidateCreateActivityRequest(createActivityRequest, messageBuilder, RequestMessage, out errorResponse))
+      if (InputValidators.ValidateCreateActivityRequest(createActivityRequest, Client, RequestMessage, out errorResponse))
       {
-        GpsLocation activityLocation = new GpsLocation(createActivityRequest.Latitude, createActivityRequest.Longitude);
+        GpsLocation activityLocation = new GpsLocation(activityInformation.Latitude, activityInformation.Longitude);
 
         using (UnitOfWork unitOfWork = new UnitOfWork())
         {
@@ -716,23 +717,7 @@ namespace ProximityServer.Network
           List<byte[]> ignoreServerIds = new List<byte[]>(createActivityRequest.IgnoreServerIds.Select(i => i.ToByteArray()));
           if (await unitOfWork.NeighborRepository.IsServerNearestToLocationAsync(activityLocation, ignoreServerIds, nearestServerId))
           {
-            PrimaryActivity activity = new PrimaryActivity()
-            {
-              Version = new SemVer(createActivityRequest.Version).ToByteArray(),
-              ActivityId = createActivityRequest.Id,
-              OwnerIdentityId = Client.IdentityId,
-              OwnerPublicKey = Client.PublicKey,
-              OwnerProfileServerId = createActivityRequest.ProfileServerContact.NetworkId.ToByteArray(),
-              OwnerProfileServerIpAddress = createActivityRequest.ProfileServerContact.IpAddress.ToByteArray(),
-              OwnerProfileServerPrimaryPort = (ushort)createActivityRequest.ProfileServerContact.PrimaryPort,
-              Type = createActivityRequest.Type,
-              LocationLatitude = activityLocation.Latitude,
-              LocationLongitude = activityLocation.Longitude,
-              PrecisionRadius = createActivityRequest.Precision,
-              StartTime = ProtocolHelper.UnixTimestampMsToDateTime(createActivityRequest.StartTime).Value,
-              ExpirationTime = ProtocolHelper.UnixTimestampMsToDateTime(createActivityRequest.ExpirationTime).Value,
-              ExtraData = createActivityRequest.ExtraData
-            };
+            PrimaryActivity activity = ActivityBase.FromActivityInformation<PrimaryActivity>(activityInformation); 
 
             StrongBox<int> existingActivityId = new StrongBox<int>(0);
             if (await unitOfWork.PrimaryActivityRepository.CreateAndPropagateAsync(activity, existingActivityId))
@@ -763,178 +748,6 @@ namespace ProximityServer.Network
     }
 
 
-    /// <summary>
-    /// Checks whether the create activity request is valid.
-    /// <para>This function does not verify the uniqueness of the activity identifier.
-    /// It also does not verify whether a closer proximity server exists.</para>
-    /// </summary>
-    /// <param name="CreateActivityRequest">Create activity request part of the client's request message.</param>
-    /// <param name="MessageBuilder">Client's network message builder.</param>
-    /// <param name="RequestMessage">Full request message from client.</param>
-    /// <param name="ErrorResponse">If the function fails, this is filled with error response message that is ready to be sent to the client.</param>
-    /// <returns>true if the create activity request can be applied, false otherwise.</returns>
-    private bool ValidateCreateActivityRequest(CreateActivityRequest CreateActivityRequest, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
-    {
-      log.Trace("()");
-
-      bool res = false;
-      ErrorResponse = null;
-
-      string details = null;
-
-      SemVer version = new SemVer(CreateActivityRequest.Version);
-
-      // Currently only supported version is 1.0.0.
-      if (!version.Equals(SemVer.V100))
-      {
-        log.Debug("Unsupported version '{0}'.", version);
-        details = "version";
-      }
-
-
-      if (details == null)
-      {
-        uint activityId = CreateActivityRequest.Id;
-
-        // 0 is not a valid activity identifier.
-        if (activityId == 0)
-        {
-          log.Debug("Invalid activity ID '{0}'.", activityId);
-          details = "id";
-        }
-      }
-
-      if (details == null)
-      {
-        ServerContactInfo sci = CreateActivityRequest.ProfileServerContact;
-        bool networkIdValid = sci.NetworkId.Length == ProtocolHelper.NetworkIdentifierLength;
-        IPAddress ipAddress = IPAddressExtensions.IpFromBytes(sci.IpAddress.ToByteArray());
-        bool ipAddressValid = (ipAddress != null) && (Config.Configuration.TestModeEnabled || !ipAddress.IsReservedOrLocal());
-        bool portValid = (1 <= sci.PrimaryPort) && (sci.PrimaryPort <= 65535);
-
-        if (!networkIdValid || !ipAddressValid || !portValid)
-        {
-          log.Debug("Profile server contact's network ID is {0}, IP address is {1}, port is {2}.", networkIdValid ? "valid" : "invalid", ipAddressValid ? "valid" : "invalid", portValid ? "valid" : "invalid");
-
-          if (!networkIdValid) details = "profileServerContact.networkId";
-          else if (!ipAddressValid) details = "profileServerContact.ipAddress";
-          else if (!portValid) details = "profileServerContact.primaryPort";
-        }
-      }
-
-      if (details == null)
-      {
-        string activityType = CreateActivityRequest.Type;
-        if (activityType == null) activityType = "";
-
-        int byteLen = Encoding.UTF8.GetByteCount(activityType);
-        if (byteLen > ActivityBase.MaxActivityTypeLengthBytes)
-        {
-          log.Debug("Activity type too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityTypeLengthBytes);
-          details = "type";
-        }
-      }
-
-      if (details == null)
-      {
-        GpsLocation locLat = new GpsLocation(CreateActivityRequest.Latitude, 0);
-        GpsLocation locLong = new GpsLocation(0, CreateActivityRequest.Longitude);
-        if (!locLat.IsValid())
-        {
-          log.Debug("Latitude '{0}' is not a valid GPS latitude value.", CreateActivityRequest.Latitude);
-          details = "latitude";
-        }
-        else if (!locLong.IsValid())
-        {
-          log.Debug("Longitude '{0}' is not a valid GPS longitude value.", CreateActivityRequest.Longitude);
-          details = "longitude";
-        }
-      }
-
-      if (details == null)
-      {
-        uint precision = CreateActivityRequest.Precision;
-        bool precisionValid = (0 <= precision) && (precision <= ActivityBase.MaxLocationPrecision);
-        if (!precisionValid)
-        {
-          log.Debug("Precision '{0}' is not an integer between 0 and {1}.", precision, ActivityBase.MaxLocationPrecision);
-          details = "precision";
-        }
-      }
-
-
-      if (details == null)
-      {
-        DateTime? startTime = ProtocolHelper.UnixTimestampMsToDateTime(CreateActivityRequest.StartTime);
-        DateTime? expirationTime = ProtocolHelper.UnixTimestampMsToDateTime(CreateActivityRequest.ExpirationTime);
-
-        if (startTime == null)
-        {
-          log.Debug("Invalid activity start time timestamp '{0}'.", CreateActivityRequest.StartTime);
-          details = "startTime";
-        }
-        else if (expirationTime == null)
-        {
-          log.Debug("Invalid activity expiration time timestamp '{0}'.", CreateActivityRequest.ExpirationTime);
-          details = "expirationTime";
-        }
-        else
-        {
-          if (startTime > expirationTime)
-          {
-            log.Debug("Activity expiration time has to be greater than or equal to its start time.");
-            details = "expirationTime";
-          }
-          else if (expirationTime.Value > DateTime.UtcNow.AddHours(ActivityBase.MaxActivityLifeTimeHours))
-          {
-            log.Debug("Activity expiration time {0} is more than {1} hours in the future.", expirationTime.Value.ToString("yyyy-MM-dd HH:mm:ss"), ActivityBase.MaxActivityLifeTimeHours);
-            details = "expirationTime";
-          }
-        }
-      }
-
-      if (details == null)
-      {
-        string extraData = CreateActivityRequest.ExtraData;
-        if (extraData == null) extraData = "";
-
-
-        // Extra data is semicolon separated 'key=value' list, max ActivityBase.MaxActivityExtraDataLengthBytes bytes long.
-        int byteLen = Encoding.UTF8.GetByteCount(extraData);
-        if (byteLen > ActivityBase.MaxActivityExtraDataLengthBytes)
-        {
-          log.Debug("Extra data too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityExtraDataLengthBytes);
-          details = "extraData";
-        }
-      }
-
-      if (details == null)
-      {
-        int index = 0;
-        foreach (ByteString serverId in CreateActivityRequest.IgnoreServerIds)
-        {
-          if (serverId.Length != ProtocolHelper.NetworkIdentifierLength)
-          {
-            log.Debug("Ignored server ID #{0} is not a valid network ID as its length is {1} bytes.", index, serverId.Length);
-            details = "ignoreServerIds";
-            break;
-          }
-
-          index++;
-        }
-      }
-
-      if (details == null)
-      {
-        res = true;
-      }
-      else ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, details);
-
-
-      log.Trace("(-):{0}", res);
-      return res;
-    }
-
 
     /// <summary>
     /// Processes UpdateActivityRequest message from client.
@@ -960,77 +773,32 @@ namespace ProximityServer.Network
 
       res = messageBuilder.CreateErrorInternalResponse(RequestMessage);
       ProxProtocolMessage errorResponse;
-      if (ValidateUpdateActivityRequest(updateActivityRequest, messageBuilder, RequestMessage, out errorResponse))
+      if (InputValidators.ValidateUpdateActivityRequest(updateActivityRequest, Client, RequestMessage, out errorResponse))
       {
         using (UnitOfWork unitOfWork = new UnitOfWork())
         {
-          bool error = false;
-          bool migrateActivity = false;
           StrongBox<byte[]> nearestServerId = new StrongBox<byte[]>(null);
-          if (updateActivityRequest.SetLocation)
+          Status status = await unitOfWork.PrimaryActivityRepository.UpdateAndPropagateAsync(updateActivityRequest, Client.IdentityId, nearestServerId);
+          switch (status)
           {
-            GpsLocation activityLocation = new GpsLocation(updateActivityRequest.Latitude, updateActivityRequest.Longitude);
-            List<byte[]> ignoreServerIds = new List<byte[]>(updateActivityRequest.IgnoreServerIds.Select(i => i.ToByteArray()));
-            if (!await unitOfWork.NeighborRepository.IsServerNearestToLocationAsync(activityLocation, ignoreServerIds, nearestServerId, ProxMessageBuilder.ActivityMigrationDistanceTolerance))
-            {
-              if (nearestServerId.Value != null)
-              {
-                migrateActivity = true;
-                log.Debug("Activity's new location is outside the reach of this proximity server, the activity will be deleted from the database.");
-                res = messageBuilder.CreateErrorRejectedResponse(RequestMessage, nearestServerId.Value.ToHex());
-              }
-              else error = true;
-            }
+            case Status.Ok:
+              // Activity was updated and the change will be propagated to the neighborhood.
+              res = messageBuilder.CreateUpdateActivityResponse(RequestMessage);
+              break;
+
+            case Status.ErrorRejected:
+              res = messageBuilder.CreateErrorRejectedResponse(RequestMessage, nearestServerId.Value.ToHex());
+              break;
+
+            case Status.ErrorNotFound:
+              // Activity of given ID not found among activities created by the client.
+              res = messageBuilder.CreateErrorNotFoundResponse(RequestMessage);
+              break;
+
+            default:
+              // Internal error
+              break;
           }
-
-          if (!error)
-          {
-            if (!migrateActivity)
-            {
-              Status status = await unitOfWork.PrimaryActivityRepository.UpdateAndPropagateAsync(updateActivityRequest, Client.IdentityId);
-              switch (status)
-              {
-                case Status.Ok:
-                  // Activity was updated and the change will be propagated to the neighborhood.
-                  res = messageBuilder.CreateUpdateActivityResponse(RequestMessage);
-                  break;
-
-                case Status.ErrorNotFound:
-                  // Activity of given ID not found among activities created by the client.
-                  res = messageBuilder.CreateErrorNotFoundResponse(RequestMessage);
-                  break;
-
-                case Status.ErrorInvalidValue:
-                  // Activity's new start time is greater than its new expiration time.
-                  res = messageBuilder.CreateErrorInvalidValueResponse(RequestMessage, "expirationTime");
-                  break;
-
-                default:
-                  // Internal error
-                  break;
-              }
-            }
-            else
-            {
-              // The update is rejected, there is a closer server to the activity's new location.
-              StrongBox<bool> notFound = new StrongBox<bool>(false);
-              if (await unitOfWork.PrimaryActivityRepository.DeleteAndPropagateAsync(updateActivityRequest.Id, Client.IdentityId, notFound))
-              {
-                if (!notFound.Value)
-                {
-                  // The activity was deleted from the database and this change will be propagated to the neighborhood.
-                  log.Debug("Update rejected, activity ID {0}, owner ID '{1}' deleted.", updateActivityRequest.Id, Client.IdentityId);
-                  res = messageBuilder.CreateErrorRejectedResponse(RequestMessage, nearestServerId.Value.ToHex());
-                }
-                else
-                {
-                  // Activity of given ID not found among activities created by the client.
-                  res = messageBuilder.CreateErrorNotFoundResponse(RequestMessage);
-                }
-              }
-            }
-          }
-          // else Internal error
         }
       }
       else res = errorResponse;
@@ -1040,145 +808,6 @@ namespace ProximityServer.Network
     }
 
 
-    /// <summary>
-    /// Checks whether the update activity request is valid.
-    /// <para>This function does not verify whether the activity exists.
-    /// It also does not verify whether a closer proximity server exists to which the activity should be migrated.
-    /// It also does not verify whether the changed activity's start time will be before expiration time.</para>
-    /// </summary>
-    /// <param name="UpdateActivityRequest">Update activity request part of the client's request message.</param>
-    /// <param name="MessageBuilder">Client's network message builder.</param>
-    /// <param name="RequestMessage">Full request message from client.</param>
-    /// <param name="ErrorResponse">If the function fails, this is filled with error response message that is ready to be sent to the client.</param>
-    /// <returns>true if the update activity request can be applied, false otherwise.</returns>
-    private bool ValidateUpdateActivityRequest(UpdateActivityRequest UpdateActivityRequest, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
-    {
-      log.Trace("()");
-
-      bool res = false;
-      ErrorResponse = null;
-
-      string details = null;
-
-      if (!UpdateActivityRequest.SetLocation
-        && !UpdateActivityRequest.SetPrecision
-        && !UpdateActivityRequest.SetStartTime
-        && !UpdateActivityRequest.SetExpirationTime
-        && !UpdateActivityRequest.SetExtraData)
-      {
-        log.Debug("Update request does not want to change anything.");
-        details = "set*";
-      }
-
-      if (details == null)
-      {
-        uint activityId = UpdateActivityRequest.Id;
-
-        // 0 is not a valid activity identifier.
-        if (activityId == 0)
-        {
-          log.Debug("Invalid activity ID '{0}'.", activityId);
-          details = "id";
-        }
-      }
-
-      if ((details == null) && UpdateActivityRequest.SetLocation)
-      {
-        GpsLocation locLat = new GpsLocation(UpdateActivityRequest.Latitude, 0);
-        GpsLocation locLong = new GpsLocation(0, UpdateActivityRequest.Longitude);
-        if (!locLat.IsValid())
-        {
-          log.Debug("Latitude '{0}' is not a valid GPS latitude value.", UpdateActivityRequest.Latitude);
-          details = "latitude";
-        }
-        else if (!locLong.IsValid())
-        {
-          log.Debug("Longitude '{0}' is not a valid GPS longitude value.", UpdateActivityRequest.Longitude);
-          details = "longitude";
-        }
-      }
-
-      if ((details == null) && UpdateActivityRequest.SetPrecision)
-      {
-        uint precision = UpdateActivityRequest.Precision;
-        bool precisionValid = (0 <= precision) && (precision <= ActivityBase.MaxLocationPrecision);
-        if (!precisionValid)
-        {
-          log.Debug("Precision '{0}' is not an integer between 0 and {1}.", precision, ActivityBase.MaxLocationPrecision);
-          details = "precision";
-        }
-      }
-
-
-      if ((details == null) && UpdateActivityRequest.SetStartTime)
-      {
-        DateTime? startTime = ProtocolHelper.UnixTimestampMsToDateTime(UpdateActivityRequest.StartTime);
-        if (startTime == null)
-        {
-          log.Debug("Invalid activity start time timestamp '{0}'.", UpdateActivityRequest.StartTime);
-          details = "startTime";
-        }
-      }
-
-      if ((details == null) && UpdateActivityRequest.SetExpirationTime)
-      {
-        DateTime? expirationTime = ProtocolHelper.UnixTimestampMsToDateTime(UpdateActivityRequest.ExpirationTime);
-        if (expirationTime != null)
-        {
-          if (expirationTime.Value > DateTime.UtcNow.AddHours(ActivityBase.MaxActivityLifeTimeHours))
-          {
-            log.Debug("Activity expiration time {0} is more than {1} hours in the future.", expirationTime.Value.ToString("yyyy-MM-dd HH:mm:ss"), ActivityBase.MaxActivityLifeTimeHours);
-            details = "expirationTime";
-          }
-        }
-        else
-        {
-          log.Debug("Invalid activity expiration time timestamp '{0}'.", UpdateActivityRequest.ExpirationTime);
-          details = "expirationTime";
-        }
-      }
-
-      if ((details == null) && UpdateActivityRequest.SetExtraData)
-      {
-        string extraData = UpdateActivityRequest.ExtraData;
-        if (extraData == null) extraData = "";
-
-
-        // Extra data is semicolon separated 'key=value' list, max ActivityBase.MaxActivityExtraDataLengthBytes bytes long.
-        int byteLen = Encoding.UTF8.GetByteCount(extraData);
-        if (byteLen > ActivityBase.MaxActivityExtraDataLengthBytes)
-        {
-          log.Debug("Extra data too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityExtraDataLengthBytes);
-          details = "extraData";
-        }
-      }
-
-      if (details == null)
-      {
-        int index = 0;
-        foreach (ByteString serverId in UpdateActivityRequest.IgnoreServerIds)
-        {
-          if (serverId.Length != ProtocolHelper.NetworkIdentifierLength)
-          {
-            log.Debug("Ignored server ID #{0} is not a valid network ID as its length is {1} bytes.", index, serverId.Length);
-            details = "ignoreServerIds";
-            break;
-          }
-
-          index++;
-        }
-      }
-
-      if (details == null)
-      {
-        res = true;
-      }
-      else ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, details);
-
-
-      log.Trace("(-):{0}", res);
-      return res;
-    }
 
 
 
@@ -1284,7 +913,7 @@ namespace ProximityServer.Network
       ActivitySearchRequest activitySearchRequest = RequestMessage.Request.ConversationRequest.ActivitySearch;
 
       ProxProtocolMessage errorResponse;
-      if (ValidateActivitySearchRequest(activitySearchRequest, messageBuilder, RequestMessage, out errorResponse))
+      if (InputValidators.ValidateActivitySearchRequest(activitySearchRequest, messageBuilder, RequestMessage, out errorResponse))
       {
         res = messageBuilder.CreateErrorInternalResponse(RequestMessage);
         using (UnitOfWork unitOfWork = new UnitOfWork())
@@ -1395,158 +1024,6 @@ namespace ProximityServer.Network
       return res;
     }
 
-    /// <summary>
-    /// Checks whether the activity search request is valid.
-    /// </summary>
-    /// <param name="ActivitySearchRequest">Activity search request part of the client's request message.</param>
-    /// <param name="MessageBuilder">Client's network message builder.</param>
-    /// <param name="RequestMessage">Full request message from client.</param>
-    /// <param name="ErrorResponse">If the function fails, this is filled with error response message that is ready to be sent to the client.</param>
-    /// <returns>true if the search request is valid, false otherwise.</returns>
-    private bool ValidateActivitySearchRequest(ActivitySearchRequest ActivitySearchRequest, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
-    {
-      log.Trace("()");
-
-      bool res = false;
-      ErrorResponse = null;
-      string details = null;
-
-      int responseResultLimit = ActivitySearchMaxResponseRecords;
-      int totalResultLimit = ActivitySearchMaxTotalRecords;
-
-      bool maxResponseRecordCountValid = (1 <= ActivitySearchRequest.MaxResponseRecordCount)
-        && (ActivitySearchRequest.MaxResponseRecordCount <= responseResultLimit)
-        && (ActivitySearchRequest.MaxResponseRecordCount <= ActivitySearchRequest.MaxTotalRecordCount);
-      if (!maxResponseRecordCountValid)
-      {
-        log.Debug("Invalid maxResponseRecordCount value '{0}'.", ActivitySearchRequest.MaxResponseRecordCount);
-        details = "maxResponseRecordCount";
-      }
-
-      if (details == null)
-      {
-        bool maxTotalRecordCountValid = (1 <= ActivitySearchRequest.MaxTotalRecordCount) && (ActivitySearchRequest.MaxTotalRecordCount <= totalResultLimit);
-        if (!maxTotalRecordCountValid)
-        {
-          log.Debug("Invalid maxTotalRecordCount value '{0}'.", ActivitySearchRequest.MaxTotalRecordCount);
-          details = "maxTotalRecordCount";
-        }
-      }
-
-      if ((details == null) && ((ActivitySearchRequest.OwnerNetworkId == null) || (ActivitySearchRequest.OwnerNetworkId.Length == 0)))
-      {
-        // If ActivitySearchRequest.Id is not zero, ActivitySearchRequest.OwnerNetworkId must not be empty.
-        bool ownerNetworkIdValid = ActivitySearchRequest.Id == 0;
-        if (!ownerNetworkIdValid)
-        {
-          log.Debug("Owner network ID is not used but activity ID is non-zero.");
-          details = "ownerNetworkId";
-        }
-      }
-
-      if ((details == null) && (ActivitySearchRequest.OwnerNetworkId != null) && (ActivitySearchRequest.OwnerNetworkId.Length > 0))
-      {
-        bool ownerNetworkIdValid = ActivitySearchRequest.OwnerNetworkId.Length == ProtocolHelper.NetworkIdentifierLength;
-        if (!ownerNetworkIdValid)
-        {
-          log.Debug("Invalid owner network ID length '{0}'.", ActivitySearchRequest.OwnerNetworkId.Length);
-          details = "ownerNetworkId";
-        }
-      }
-
-      if ((details == null) && (ActivitySearchRequest.Type != null))
-      {
-        bool typeValid = Encoding.UTF8.GetByteCount(ActivitySearchRequest.Type) <= ProxMessageBuilder.MaxActivitySearchTypeLengthBytes;
-        if (!typeValid)
-        {
-          log.Debug("Invalid type value length '{0}'.", ActivitySearchRequest.Type.Length);
-          details = "type";
-        }
-      }
-
-      if ((details == null) && ((ActivitySearchRequest.StartNotAfter != 0) || (ActivitySearchRequest.ExpirationNotBefore != 0)))
-      {
-        DateTime? startNotAfter = null;
-        DateTime? expirationNotBefore = null;
-
-        if (ActivitySearchRequest.StartNotAfter != 0)
-        {
-          startNotAfter = ProtocolHelper.UnixTimestampMsToDateTime(ActivitySearchRequest.StartNotAfter);
-          bool startNotAfterValid = startNotAfter != null;
-          if (!startNotAfterValid)
-          {
-            log.Debug("Start not after {0} is not a valid timestamp value.", ActivitySearchRequest.StartNotAfter);
-            details = "startNotAfter";
-          }
-        }
-
-        if ((details == null) && (ActivitySearchRequest.ExpirationNotBefore != 0))
-        {
-          expirationNotBefore = ProtocolHelper.UnixTimestampMsToDateTime(ActivitySearchRequest.ExpirationNotBefore);
-          bool expirationNotBeforeValid = expirationNotBefore != null;
-          if (!expirationNotBeforeValid)
-          {
-            log.Debug("Expiration not before {0} is not a valid timestamp value.", ActivitySearchRequest.ExpirationNotBefore);
-            details = "expirationNotBefore";
-          }
-          else if (ActivitySearchRequest.StartNotAfter != 0)
-          {
-            expirationNotBeforeValid = ActivitySearchRequest.StartNotAfter <= ActivitySearchRequest.ExpirationNotBefore;
-            if (!expirationNotBeforeValid)
-            {
-              log.Debug("Expiration not before {0} is smaller than start not after {1}.", ActivitySearchRequest.StartNotAfter, ActivitySearchRequest.ExpirationNotBefore);
-              details = "expirationNotBefore";
-            }
-          }
-        }
-      }
-
-      if ((details == null) && (ActivitySearchRequest.Latitude != GpsLocation.NoLocationLocationType))
-      {
-        GpsLocation locLat = new GpsLocation(ActivitySearchRequest.Latitude, 0);
-        GpsLocation locLong = new GpsLocation(0, ActivitySearchRequest.Longitude);
-        if (!locLat.IsValid())
-        {
-          log.Debug("Latitude '{0}' is not a valid GPS latitude value.", ActivitySearchRequest.Latitude);
-          details = "latitude";
-        }
-        else if (!locLong.IsValid())
-        {
-          log.Debug("Longitude '{0}' is not a valid GPS longitude value.", ActivitySearchRequest.Longitude);
-          details = "longitude";
-        }
-      }
-
-      if ((details == null) && (ActivitySearchRequest.Latitude != GpsLocation.NoLocationLocationType))
-      {
-        bool radiusValid = ActivitySearchRequest.Radius > 0;
-        if (!radiusValid)
-        {
-          log.Debug("Invalid radius value '{0}'.", ActivitySearchRequest.Radius);
-          details = "radius";
-        }
-      }
-
-      if ((details == null) && (ActivitySearchRequest.ExtraData != null))
-      {
-        bool validLength = (Encoding.UTF8.GetByteCount(ActivitySearchRequest.ExtraData) <= ProxMessageBuilder.MaxActivitySearchExtraDataLengthBytes);
-        bool extraDataValid = RegexTypeValidator.ValidateRegex(ActivitySearchRequest.ExtraData);
-        if (!validLength || !extraDataValid)
-        {
-          log.Debug("Invalid extraData regular expression filter.");
-          details = "extraData";
-        }
-      }
-
-      if (details == null)
-      {
-        res = true;
-      }
-      else ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, details);
-
-      log.Trace("(-):{0}", res);
-      return res;
-    }
 
 
 
@@ -1671,22 +1148,7 @@ namespace ProximityServer.Network
               ActivityNetworkInformation ani = new ActivityNetworkInformation()
               {
                 IsPrimary = isPrimary,
-                Version = ProtocolHelper.ByteArrayToByteString(activity.Version),
-                Id = activity.ActivityId,
-                OwnerPublicKey = ProtocolHelper.ByteArrayToByteString(activity.OwnerPublicKey),
-                ProfileServerContact = new ServerContactInfo()
-                {
-                  IpAddress = ProtocolHelper.ByteArrayToByteString(activity.OwnerProfileServerIpAddress),
-                  NetworkId = ProtocolHelper.ByteArrayToByteString(activity.OwnerProfileServerId),
-                  PrimaryPort = activity.OwnerProfileServerPrimaryPort,
-                },
-                Type = activity.Type != null ? activity.Type : "",
-                Latitude = activityLocation.GetLocationTypeLatitude(),
-                Longitude = activityLocation.GetLocationTypeLongitude(),
-                Precision = activity.PrecisionRadius,
-                StartTime = ProtocolHelper.DateTimeToUnixTimestampMs(activity.StartTime),
-                ExpirationTime = ProtocolHelper.DateTimeToUnixTimestampMs(activity.ExpirationTime),
-                ExtraData = activity.ExtraData != null ? activity.ExtraData : ""
+                Activity = activity.ToActivityInformation()
               };
 
               if (isPrimary)
@@ -2002,25 +1464,7 @@ namespace ProximityServer.Network
         GpsLocation location = activity.GetLocation();
         SharedActivityUpdateItem updateItem = new SharedActivityUpdateItem()
         {
-          Add = new SharedActivityAddItem()
-          {
-            Version = ProtocolHelper.ByteArrayToByteString(activity.Version),
-            Id = activity.ActivityId,
-            OwnerPublicKey = ProtocolHelper.ByteArrayToByteString(activity.OwnerPublicKey),
-            ProfileServerContact = new ServerContactInfo()
-            {
-              IpAddress = ProtocolHelper.ByteArrayToByteString(activity.OwnerProfileServerIpAddress),
-              NetworkId = ProtocolHelper.ByteArrayToByteString(activity.OwnerProfileServerId),
-              PrimaryPort = activity.OwnerProfileServerPrimaryPort,
-            },
-            Type = activity.Type,
-            Latitude = location.GetLocationTypeLatitude(),
-            Longitude = location.GetLocationTypeLongitude(),
-            Precision = activity.PrecisionRadius,
-            StartTime = ProtocolHelper.DateTimeToUnixTimestampMs(activity.StartTime),
-            ExpirationTime = ProtocolHelper.DateTimeToUnixTimestampMs(activity.ExpirationTime),
-            ExtraData = activity.ExtraData
-          }
+          Add = activity.ToActivityInformation()
         };
 
         res.Request.ConversationRequest.NeighborhoodSharedActivityUpdate.Items.Add(updateItem);
@@ -2199,7 +1643,7 @@ namespace ProximityServer.Network
       {
         SharedActivityUpdateItem updateItem = neighborhoodSharedActivityUpdateRequest.Items[itemIndex];
         ProxProtocolMessage errorResponse;
-        if (ValidateSharedActivityUpdateItem(updateItem, itemIndex, sharedActivitiesCount, usedActivitiesIdsInBatch, Client.MessageBuilder, RequestMessage, out errorResponse))
+        if (InputValidators.ValidateSharedActivityUpdateItem(updateItem, itemIndex, sharedActivitiesCount, usedActivitiesIdsInBatch, Client.MessageBuilder, RequestMessage, out errorResponse))
         {
           // Modify sharedActivitiesCount to reflect the item we just validated.
           // In case of delete operation, we have not checked the existence yet, 
@@ -2311,481 +1755,6 @@ namespace ProximityServer.Network
 
 
 
-    /// <summary>
-    /// Validates incoming SharedActivityUpdateItem update item.
-    /// </summary>
-    /// <param name="UpdateItem">Update item to validate.</param>
-    /// <param name="Index">Item index in the update message.</param>
-    /// <param name="SharedActivitiesCount">Number of activities the neighbor already shares with the activity server.</param>
-    /// <param name="UsedFullActivityIdsInBatch">List of activity full IDs of already validated items of this batch.</param>
-    /// <param name="MessageBuilder">Client's network message builder.</param>
-    /// <param name="RequestMessage">Full request message received by the client.</param>
-    /// <param name="ErrorResponse">If the validation fails, this is filled with response message to be sent to the neighbor.</param>
-    /// <returns>true if the validation is successful, false otherwise.</returns>
-    public bool ValidateSharedActivityUpdateItem(SharedActivityUpdateItem UpdateItem, int Index, int SharedActivitiesCount, HashSet<string> UsedFullActivityIdsInBatch, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
-    {
-      log.Trace("(Index:{0},SharedActivitiesCount:{1})", Index, SharedActivitiesCount);
-
-      bool res = false;
-      ErrorResponse = null;
-
-      switch (UpdateItem.ActionTypeCase)
-      {
-        case SharedActivityUpdateItem.ActionTypeOneofCase.Add:
-          res = ValidateSharedActivityAddItem(UpdateItem.Add, Index, SharedActivitiesCount, UsedFullActivityIdsInBatch, MessageBuilder, RequestMessage, out ErrorResponse);
-          break;
-
-        case SharedActivityUpdateItem.ActionTypeOneofCase.Change:
-          res = ValidateSharedActivityChangeItem(UpdateItem.Change, Index, UsedFullActivityIdsInBatch, MessageBuilder, RequestMessage, out ErrorResponse);
-          break;
-
-        case SharedActivityUpdateItem.ActionTypeOneofCase.Delete:
-          res = ValidateSharedActivityDeleteItem(UpdateItem.Delete, Index, UsedFullActivityIdsInBatch, MessageBuilder, RequestMessage, out ErrorResponse);
-          break;
-
-        default:
-          ErrorResponse = MessageBuilder.CreateErrorProtocolViolationResponse(RequestMessage);
-          res = false;
-          break;
-      }
-
-      log.Trace("(-):{0}", res);
-      return res;
-    }
-
-
-
-
-    /// <summary>
-    /// Validates incoming SharedActivityAddItem update item.
-    /// <para>This function does not verify whether the activity is not duplicate.</para>
-    /// </summary>
-    /// <param name="AddItem">Add item to validate.</param>
-    /// <param name="Index">Item index in the update message.</param>
-    /// <param name="SharedActivitiesCount">Number of activities the neighbor already shares with the activity server.</param>
-    /// <param name="UsedFullActivityIdsInBatch">List of activity full IDs of already validated items of this batch.</param>
-    /// <param name="MessageBuilder">Client's network message builder.</param>
-    /// <param name="RequestMessage">Full request message received by the client.</param>
-    /// <param name="ErrorResponse">If the validation fails, this is filled with response message to be sent to the neighbor.</param>
-    /// <returns>true if the validation is successful, false otherwise.</returns>
-    public bool ValidateSharedActivityAddItem(SharedActivityAddItem AddItem, int Index, int SharedActivitiesCount, HashSet<string> UsedFullActivityIdsInBatch, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
-    {
-      log.Trace("(Index:{0},SharedActivitiesCount:{1})", Index, SharedActivitiesCount);
-
-      bool res = false;
-      ErrorResponse = null;
-
-      string details = null;
-
-      if (SharedActivitiesCount >= ActivityBase.MaxPrimaryActivities)
-      {
-        log.Debug("Target server already sent too many activities.");
-        details = "add";
-      }
-
-      if (details == null)
-      {
-        SemVer version = new SemVer(AddItem.Version);
-        // Currently only supported version is 1.0.0.
-        if (!version.Equals(SemVer.V100))
-        {
-          log.Debug("Unsupported version '{0}'.", version);
-          details = "add.version";
-        }
-      }
-
-      if (details == null)
-      {
-        // We do not verify activity duplicity here, that is being done in ProcessMessageNeighborhoodSharedActivityUpdateRequestAsync.
-        uint activityId = AddItem.Id;
-
-        // 0 is not a valid activity identifier.
-        if (activityId == 0)
-        {
-          log.Debug("Invalid activity ID '{0}'.", activityId);
-          details = "add.id";
-        }
-      }
-
-      if (details == null)
-      {
-        byte[] pubKey = AddItem.OwnerPublicKey.ToByteArray();
-        bool pubKeyValid = (0 < pubKey.Length) && (pubKey.Length <= ProtocolHelper.MaxPublicKeyLengthBytes);
-        if (pubKeyValid)
-        {
-          byte[] identityId = Crypto.Sha256(pubKey);
-          NeighborActivity na = new NeighborActivity()
-          {
-            ActivityId = AddItem.Id,
-            OwnerIdentityId = identityId
-          };
-
-          string activityFullId = na.GetFullId();
-          if (!UsedFullActivityIdsInBatch.Contains(activityFullId))
-          {
-            UsedFullActivityIdsInBatch.Add(activityFullId);
-          }
-          else
-          {
-            log.Debug("Activity full ID '{0}' (public key '{1}') already processed in this request.", activityFullId, pubKey.ToHex());
-            details = "add.id";
-          }
-        }
-        else
-        {
-          log.Debug("Invalid public key length '{0}'.", pubKey.Length);
-          details = "add.ownerPublicKey";
-        }
-      }
-
-      if (details == null)
-      {
-        ServerContactInfo sci = AddItem.ProfileServerContact;
-        bool networkIdValid = sci.NetworkId.Length == ProtocolHelper.NetworkIdentifierLength;
-        IPAddress ipAddress = IPAddressExtensions.IpFromBytes(sci.IpAddress.ToByteArray());
-        bool ipAddressValid = (ipAddress != null) && (Config.Configuration.TestModeEnabled || !ipAddress.IsReservedOrLocal());
-        bool portValid = (1 <= sci.PrimaryPort) && (sci.PrimaryPort <= 65535);
-
-        if (!networkIdValid || !ipAddressValid || !portValid)
-        {
-          log.Debug("Profile server contact's network ID is {0}, IP address is {1}, port is {2}.", networkIdValid ? "valid" : "invalid", ipAddressValid ? "valid" : "invalid", portValid ? "valid" : "invalid");
-
-          if (!networkIdValid) details = "add.profileServerContact.networkId";
-          else if (!ipAddressValid) details = "add.profileServerContact.ipAddress";
-          else if (!portValid) details = "add.profileServerContact.primaryPort";
-        }
-      }
-
-      if (details == null)
-      {
-        string activityType = AddItem.Type;
-        if (activityType == null) activityType = "";
-
-        int byteLen = Encoding.UTF8.GetByteCount(activityType);
-        if (byteLen > ActivityBase.MaxActivityTypeLengthBytes)
-        {
-          log.Debug("Activity type too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityTypeLengthBytes);
-          details = "add.type";
-        }
-      }
-
-      if (details == null)
-      {
-        GpsLocation locLat = new GpsLocation(AddItem.Latitude, 0);
-        GpsLocation locLong = new GpsLocation(0, AddItem.Longitude);
-        if (!locLat.IsValid())
-        {
-          log.Debug("Latitude '{0}' is not a valid GPS latitude value.", AddItem.Latitude);
-          details = "add.latitude";
-        }
-        else if (!locLong.IsValid())
-        {
-          log.Debug("Longitude '{0}' is not a valid GPS longitude value.", AddItem.Longitude);
-          details = "add.longitude";
-        }
-      }
-
-      if (details == null)
-      {
-        uint precision = AddItem.Precision;
-        bool precisionValid = (0 <= precision) && (precision <= ActivityBase.MaxLocationPrecision);
-        if (!precisionValid)
-        {
-          log.Debug("Precision '{0}' is not an integer between 0 and {1}.", precision, ActivityBase.MaxLocationPrecision);
-          details = "add.precision";
-        }
-      }
-
-
-      if (details == null)
-      {
-        DateTime? startTime = ProtocolHelper.UnixTimestampMsToDateTime(AddItem.StartTime);
-        DateTime? expirationTime = ProtocolHelper.UnixTimestampMsToDateTime(AddItem.ExpirationTime);
-
-        if (startTime == null)
-        {
-          log.Debug("Invalid activity start time timestamp '{0}'.", AddItem.StartTime);
-          details = "add.startTime";
-        }
-        else if (expirationTime == null)
-        {
-          log.Debug("Invalid activity expiration time timestamp '{0}'.", AddItem.ExpirationTime);
-          details = "add.expirationTime";
-        }
-        else
-        {
-          if (startTime > expirationTime)
-          {
-            log.Debug("Activity expiration time has to be greater than or equal to its start time.");
-            details = "add.expirationTime";
-          }
-          else if (expirationTime.Value > DateTime.UtcNow.AddHours(ActivityBase.MaxActivityLifeTimeHours))
-          {
-            log.Debug("Activity expiration time {0} is more than {1} hours in the future.", expirationTime.Value.ToString("yyyy-MM-dd HH:mm:ss"), ActivityBase.MaxActivityLifeTimeHours);
-            details = "add.expirationTime";
-          }
-        }
-      }
-
-      if (details == null)
-      {
-        string extraData = AddItem.ExtraData;
-        if (extraData == null) extraData = "";
-
-        // Extra data is semicolon separated 'key=value' list, max ActivityBase.MaxActivityExtraDataLengthBytes bytes long.
-        int byteLen = Encoding.UTF8.GetByteCount(extraData);
-        if (byteLen > ActivityBase.MaxActivityExtraDataLengthBytes)
-        {
-          log.Debug("Extra data too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityExtraDataLengthBytes);
-          details = "add.extraData";
-        }
-      }
-
-      if (details == null)
-      {
-        res = true;
-      }
-      else ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, Index.ToString() + "." + details);
-
-      log.Trace("(-):{0}", res);
-      return res;
-    }
-
-
-    /// <summary>
-    /// Validates incoming SharedActivityChangeItem update item.
-    /// <para>This function does not verify whether the activity exists.
-    /// It also does not verify whether the new activity start time and expiration time are correct if they are not both changed.</para>
-    /// </summary>
-    /// <param name="ChangeItem">Change item to validate.</param>
-    /// <param name="Index">Item index in the update message.</param>
-    /// <param name="UsedFullActivityIdsInBatch">List of activity full IDs of already validated items of this batch.</param>
-    /// <param name="MessageBuilder">Client's network message builder.</param>
-    /// <param name="RequestMessage">Full request message received by the client.</param>
-    /// <param name="ErrorResponse">If the validation fails, this is filled with response message to be sent to the neighbor.</param>
-    /// <returns>true if the validation is successful, false otherwise.</returns>
-    public bool ValidateSharedActivityChangeItem(SharedActivityChangeItem ChangeItem, int Index, HashSet<string> UsedFullActivityIdsInBatch, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
-    {
-      log.Trace("(Index:{0})", Index);
-
-      bool res = false;
-      ErrorResponse = null;
-
-      string details = null;
-
-      uint activityId = ChangeItem.Id;
-
-      // 0 is not a valid activity identifier.
-      if (activityId == 0)
-      {
-        log.Debug("Invalid activity ID '{0}'.", activityId);
-        details = "change.id";
-      }
-
-      if (details == null)
-      {
-        byte[] identityId = ChangeItem.OwnerNetworkId.ToByteArray();
-        bool identityIdValid = identityId.Length == ProtocolHelper.NetworkIdentifierLength;
-        if (identityIdValid)
-        {
-          NeighborActivity na = new NeighborActivity()
-          {
-            ActivityId = ChangeItem.Id,
-            OwnerIdentityId = identityId
-          };
-
-          string activityFullId = na.GetFullId();
-          if (!UsedFullActivityIdsInBatch.Contains(activityFullId))
-          {
-            UsedFullActivityIdsInBatch.Add(activityFullId);
-          }
-          else
-          {
-            log.Debug("Activity full ID '{0}' already processed in this request.", activityFullId);
-            details = "change.id";
-          }
-        }
-        else
-        {
-          log.Debug("Invalid owner network ID length '{0}'.", identityId.Length);
-          details = "change.ownerNetworkId";
-        }
-      }
-
-
-      if (details == null)
-      {
-        if (!ChangeItem.SetLocation
-          && !ChangeItem.SetPrecision
-          && !ChangeItem.SetStartTime
-          && !ChangeItem.SetExpirationTime
-          && !ChangeItem.SetExtraData)
-        {
-          log.Debug("Nothing is going to change.");
-          details = "change.set*";
-        }
-      }
-
-      if ((details == null) && ChangeItem.SetLocation)
-      {
-        GpsLocation locLat = new GpsLocation(ChangeItem.Latitude, 0);
-        GpsLocation locLong = new GpsLocation(0, ChangeItem.Longitude);
-        if (!locLat.IsValid())
-        {
-          log.Debug("Latitude '{0}' is not a valid GPS latitude value.", ChangeItem.Latitude);
-          details = "change.latitude";
-        }
-        else if (!locLong.IsValid())
-        {
-          log.Debug("Longitude '{0}' is not a valid GPS longitude value.", ChangeItem.Longitude);
-          details = "change.longitude";
-        }
-      }
-
-      if ((details == null) && ChangeItem.SetPrecision)
-      {
-        uint precision = ChangeItem.Precision;
-        bool precisionValid = (0 <= precision) && (precision <= ActivityBase.MaxLocationPrecision);
-        if (!precisionValid)
-        {
-          log.Debug("Precision '{0}' is not an integer between 0 and {1}.", precision, ActivityBase.MaxLocationPrecision);
-          details = "change.precision";
-        }
-      }
-
-      DateTime? startTime = null;
-      DateTime? expirationTime = null;
-      if ((details == null) && ChangeItem.SetStartTime)
-      {
-        startTime = ProtocolHelper.UnixTimestampMsToDateTime(ChangeItem.StartTime);
-        if (startTime == null)
-        {
-          log.Debug("Invalid activity start time timestamp '{0}'.", ChangeItem.StartTime);
-          details = "change.startTime";
-        }
-      }
-
-      if ((details == null) && ChangeItem.SetExpirationTime)
-      {
-        expirationTime = ProtocolHelper.UnixTimestampMsToDateTime(ChangeItem.ExpirationTime);
-        if (expirationTime == null)
-        {
-          log.Debug("Invalid activity expiration time timestamp '{0}'.", ChangeItem.ExpirationTime);
-          details = "change.expirationTime";
-        }
-      }
-
-      if ((startTime != null) && (expirationTime != null))
-      {
-        if (startTime > expirationTime)
-        {
-          log.Debug("Activity expiration time has to be greater than or equal to its start time.");
-          details = "change.expirationTime";
-        }
-        else if (expirationTime.Value > DateTime.UtcNow.AddHours(ActivityBase.MaxActivityLifeTimeHours))
-        {
-          log.Debug("Activity expiration time {0} is more than {1} hours in the future.", expirationTime.Value.ToString("yyyy-MM-dd HH:mm:ss"), ActivityBase.MaxActivityLifeTimeHours);
-          details = "change.expirationTime";
-        }
-      }
-
-
-      if ((details == null) && ChangeItem.SetExtraData)
-      {
-        string extraData = ChangeItem.ExtraData;
-        if (extraData == null) extraData = "";
-
-        // Extra data is semicolon separated 'key=value' list, max ActivityBase.MaxActivityExtraDataLengthBytes bytes long.
-        int byteLen = Encoding.UTF8.GetByteCount(extraData);
-        if (byteLen > ActivityBase.MaxActivityExtraDataLengthBytes)
-        {
-          log.Debug("Extra data too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityExtraDataLengthBytes);
-          details = "change.extraData";
-        }
-      }
-
-
-      if (details == null)
-      {
-        res = true;
-      }
-      else ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, Index.ToString() + "." + details);
-
-      log.Trace("(-):{0}", res);
-      return res;
-    }
-
-
-
-    /// <summary>
-    /// Validates incoming SharedActivityDeleteItem update item.
-    /// </summary>
-    /// <para>This function does not verify whether the activity exists.</para>
-    /// <param name="DeleteItem">Delete item to validate.</param>
-    /// <param name="Index">Item index in the update message.</param>
-    /// <param name="UsedFullActivityIdsInBatch">List of activity full IDs of already validated items of this batch.</param>
-    /// <param name="MessageBuilder">Client's network message builder.</param>
-    /// <param name="RequestMessage">Full request message received by the client.</param>
-    /// <param name="ErrorResponse">If the validation fails, this is filled with response message to be sent to the neighbor.</param>
-    /// <returns>true if the validation is successful, false otherwise.</returns>
-    public bool ValidateSharedActivityDeleteItem(SharedActivityDeleteItem DeleteItem, int Index, HashSet<string> UsedFullActivityIdsInBatch, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
-    {
-      log.Trace("(Index:{0})", Index);
-
-      bool res = false;
-      ErrorResponse = null;
-
-      string details = null;
-
-      uint activityId = DeleteItem.Id;
-
-      // 0 is not a valid activity identifier.
-      if (activityId == 0)
-      {
-        log.Debug("Invalid activity ID '{0}'.", activityId);
-        details = "delete.id";
-      }
-
-      if (details == null)
-      {
-        byte[] identityId = DeleteItem.OwnerNetworkId.ToByteArray();
-        bool identityIdValid = identityId.Length == ProtocolHelper.NetworkIdentifierLength;
-        if (identityIdValid)
-        {
-          NeighborActivity na = new NeighborActivity()
-          {
-            ActivityId = DeleteItem.Id,
-            OwnerIdentityId = identityId
-          };
-
-          string activityFullId = na.GetFullId();
-          if (!UsedFullActivityIdsInBatch.Contains(activityFullId))
-          {
-            UsedFullActivityIdsInBatch.Add(activityFullId);
-          }
-          else
-          {
-            log.Debug("Activity full ID '{0}' already processed in this request.", activityFullId);
-            details = "delete.id";
-          }
-        }
-        else
-        {
-          log.Debug("Invalid owner network ID length '{0}'.", identityId.Length);
-          details = "delete.ownerNetworkId";
-        }
-      }
-
-
-      if (details == null)
-      {
-        res = true;
-      }
-      else ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, Index.ToString() + "." + details);
-
-      log.Trace("(-):{0}", res);
-      return res;
-    }
 
 
     /// <summary>
@@ -2838,10 +1807,10 @@ namespace ProximityServer.Network
               break;
             }
 
-            SharedActivityAddItem addItem = UpdateItem.Add;
+            ActivityInformation addItem = UpdateItem.Add;
             uint activityId = addItem.Id;
-            byte[] pubKey = addItem.OwnerPublicKey.ToByteArray();
-            byte[] ownerIdentityId = Crypto.Sha256(pubKey);
+            byte[] ownerPubKey = addItem.OwnerPublicKey.ToByteArray();
+            byte[] ownerIdentityId = Crypto.Sha256(ownerPubKey);
 
             // Activity already exists if there exists a NeighborActivity with same activity ID and owner identity ID and the same primary server ID.
             // It may seem enough to just use activity ID and owner identit ID and not ID of its primary proximity server.
@@ -2851,24 +1820,7 @@ namespace ProximityServer.Network
             if (existingActivity == null)
             {
               GpsLocation location = new GpsLocation(addItem.Latitude, addItem.Longitude);
-              NeighborActivity newActivity = new NeighborActivity()
-              {
-                PrimaryServerId = Neighbor.NeighborId,
-                Version = addItem.Version.ToByteArray(),
-                ActivityId = addItem.Id,
-                OwnerIdentityId = ownerIdentityId,
-                OwnerPublicKey = pubKey,
-                OwnerProfileServerId = addItem.ProfileServerContact.NetworkId.ToByteArray(),
-                OwnerProfileServerIpAddress = addItem.ProfileServerContact.IpAddress.ToByteArray(),
-                OwnerProfileServerPrimaryPort = (ushort)addItem.ProfileServerContact.PrimaryPort,
-                Type = addItem.Type,
-                LocationLatitude = location.Latitude,
-                LocationLongitude = location.Longitude,
-                PrecisionRadius = addItem.Precision,
-                StartTime = ProtocolHelper.UnixTimestampMsToDateTime(addItem.StartTime).Value,
-                ExpirationTime = ProtocolHelper.UnixTimestampMsToDateTime(addItem.ExpirationTime).Value,
-                ExtraData = addItem.ExtraData
-              };
+              NeighborActivity newActivity = ActivityBase.FromActivityInformation<NeighborActivity>(addItem, Neighbor.NeighborId);
 
               await UnitOfWork.NeighborActivityRepository.InsertAsync(newActivity);
               Neighbor.SharedActivities++;
@@ -2886,27 +1838,16 @@ namespace ProximityServer.Network
 
         case SharedActivityUpdateItem.ActionTypeOneofCase.Change:
           {
-            SharedActivityChangeItem changeItem = UpdateItem.Change;
+            ActivityInformation changeItem = UpdateItem.Change;
             uint activityId = changeItem.Id;
-            byte[] ownerIdentityId = changeItem.OwnerNetworkId.ToByteArray();
+            byte[] ownerPubKey = changeItem.OwnerPublicKey.ToByteArray();
+            byte[] ownerIdentityId = Crypto.Sha256(ownerPubKey);
 
             // Activity already exists if there exists a NeighborActivity with same activity ID and owner identity ID and the same primary server ID.
             NeighborActivity existingActivity = (await UnitOfWork.NeighborActivityRepository.GetAsync(a => (a.ActivityId == activityId) && (a.OwnerIdentityId == ownerIdentityId) && (a.PrimaryServerId == Neighbor.NeighborId))).FirstOrDefault();
             if (existingActivity != null)
             {
-              GpsLocation location = new GpsLocation(changeItem.Latitude, changeItem.Longitude);
-
-              if (changeItem.SetLocation)
-              {
-                existingActivity.LocationLatitude = location.Latitude;
-                existingActivity.LocationLongitude = location.Longitude;
-              }
-
-              if (changeItem.SetPrecision) existingActivity.PrecisionRadius = changeItem.Precision;
-              if (changeItem.SetStartTime) existingActivity.StartTime = ProtocolHelper.UnixTimestampMsToDateTime(changeItem.StartTime).Value;
-              if (changeItem.SetExpirationTime) existingActivity.ExpirationTime = ProtocolHelper.UnixTimestampMsToDateTime(changeItem.ExpirationTime).Value;
-
-              if (changeItem.SetExtraData) existingActivity.ExtraData = changeItem.ExtraData;
+              existingActivity.CopyFromActivityInformation(changeItem);
 
               UnitOfWork.NeighborActivityRepository.Update(existingActivity);
               res.SaveDb = true;
@@ -2923,7 +1864,7 @@ namespace ProximityServer.Network
 
         case SharedActivityUpdateItem.ActionTypeOneofCase.Delete:
           {
-            SharedActivityDeleteItem deleteItem = UpdateItem.Delete;
+            ActivityFullId deleteItem = UpdateItem.Delete;
             uint activityId = deleteItem.Id;
             byte[] ownerIdentityId = deleteItem.OwnerNetworkId.ToByteArray();
 
