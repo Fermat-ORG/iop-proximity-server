@@ -18,7 +18,7 @@ namespace ProximityServer.Network
   public static class InputValidators
   {
     /// <summary>Class logger.</summary>
-    private static Logger log;
+    private static Logger log = new Logger("ProximityServer.Network.InputValidators");
 
 
     /// <summary>
