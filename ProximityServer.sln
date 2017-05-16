@@ -7,13 +7,13 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{C25BF2C5-BB9
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProximityServer", "src\ProximityServer\ProximityServer.csproj", "{306AD653-BE02-422B-AEF8-32FE49AB5A49}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "IopCommon", "..\iop-server-library\src\IopCommon\IopCommon.csproj", "{CE19805A-7222-437C-A647-AAE0477BD7F5}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "IopCommon", "..\iop-sdk-netcore\src\IopCommon\IopCommon.csproj", "{CE19805A-7222-437C-A647-AAE0477BD7F5}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "IopCrypto", "..\iop-server-library\src\IopCrypto\IopCrypto.csproj", "{C9355FB9-C6E3-4B10-935A-D6BD85B92284}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "IopCrypto", "..\iop-sdk-netcore\src\IopCrypto\IopCrypto.csproj", "{C9355FB9-C6E3-4B10-935A-D6BD85B92284}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "IopProtocol", "..\iop-server-library\src\IopProtocol\IopProtocol.csproj", "{0299A3E7-A276-4CC8-A6E8-5EF66585AB53}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "IopProtocol", "..\iop-sdk-netcore\src\IopProtocol\IopProtocol.csproj", "{0299A3E7-A276-4CC8-A6E8-5EF66585AB53}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "IopServerCore", "..\iop-server-library\src\IopServerCore\IopServerCore.csproj", "{3D026BC0-75CF-4E7E-8FCC-EDECD8489713}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "IopServerCore", "..\iop-sdk-netcore\src\IopServerCore\IopServerCore.csproj", "{3D026BC0-75CF-4E7E-8FCC-EDECD8489713}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

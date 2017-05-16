@@ -29,7 +29,7 @@ namespace ProximityServer.Data.Models
     {
       ActivityChange res = base.CompareChangeTo(Other);
 
-      if (!StructuralEqualityComparer<byte[]>.Default.Equals(this.PrimaryServerId, Other.PrimaryServerId))
+      if (!ByteArrayComparer.Equals(this.PrimaryServerId, Other.PrimaryServerId))
         res |= ActivityChange.PrimaryServerId;
 
       return res;

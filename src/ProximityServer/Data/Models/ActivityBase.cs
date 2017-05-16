@@ -204,16 +204,16 @@ namespace ProximityServer.Data.Models
       if (this.ActivityId != Other.ActivityId)
         res |= ActivityChange.ActivityId;
 
-      if (!StructuralEqualityComparer<byte[]>.Default.Equals(this.OwnerIdentityId, Other.OwnerIdentityId))
+      if (!ByteArrayComparer.Equals(this.OwnerIdentityId, Other.OwnerIdentityId))
         res |= ActivityChange.OwnerIdentityId;
 
-      if (!StructuralEqualityComparer<byte[]>.Default.Equals(this.OwnerPublicKey, Other.OwnerPublicKey))
+      if (!ByteArrayComparer.Equals(this.OwnerPublicKey, Other.OwnerPublicKey))
         res |= ActivityChange.OwnerPublicKey;
 
-      if (!StructuralEqualityComparer<byte[]>.Default.Equals(this.OwnerProfileServerId, Other.OwnerProfileServerId))
+      if (!ByteArrayComparer.Equals(this.OwnerProfileServerId, Other.OwnerProfileServerId))
         res |= ActivityChange.OwnerProfileServerId;
 
-      if (!StructuralEqualityComparer<byte[]>.Default.Equals(this.OwnerProfileServerIpAddress, Other.OwnerProfileServerIpAddress))
+      if (!ByteArrayComparer.Equals(this.OwnerProfileServerIpAddress, Other.OwnerProfileServerIpAddress))
         res |= ActivityChange.OwnerProfileServerIpAddress;
 
       if (this.OwnerProfileServerPrimaryPort != Other.OwnerProfileServerPrimaryPort)

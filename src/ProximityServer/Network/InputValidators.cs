@@ -208,7 +208,7 @@ namespace ProximityServer.Network
       {
         byte[] ownerPubKey = CreateActivityRequest.Activity.OwnerPublicKey.ToByteArray();
 
-        if (!StructuralEqualityComparer<byte[]>.Default.Equals(Client.PublicKey, ownerPubKey))
+        if (!ByteArrayComparer.Equals(Client.PublicKey, ownerPubKey))
         {
           log.Debug("Client's public key '{0}' does not match activity owner's public key '{1}'.", Client.PublicKey.ToHex(), ownerPubKey.ToHex());
           details = "activity.ownerPublicKey";
@@ -265,7 +265,7 @@ namespace ProximityServer.Network
       {
         byte[] ownerPubKey = UpdateActivityRequest.Activity.OwnerPublicKey.ToByteArray();
 
-        if (!StructuralEqualityComparer<byte[]>.Default.Equals(Client.PublicKey, ownerPubKey))
+        if (!ByteArrayComparer.Equals(Client.PublicKey, ownerPubKey))
         {
           log.Debug("Client's public key '{0}' does not match activity owner's public key '{1}'.", Client.PublicKey.ToHex(), ownerPubKey.ToHex());
           details = "activity.ownerPublicKey";
