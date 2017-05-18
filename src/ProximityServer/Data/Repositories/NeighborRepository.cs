@@ -15,6 +15,7 @@ using IopServerCore.Data;
 using IopServerCore.Kernel;
 using System.Runtime.CompilerServices;
 using System.Globalization;
+using System.Net;
 
 namespace ProximityServer.Data.Repositories
 {
@@ -260,6 +261,49 @@ namespace ProximityServer.Data.Repositories
 
 
     /// <summary>
+    /// Updates LastRefreshTime of a neighbor server.
+    /// </summary>
+    /// <param name="NeighborId">Identifier of the neighbor server to update.</param>
+    /// <returns>true if the function succeeds, false otherwise.</returns>
+    public async Task<bool> UpdateNeighborLastRefreshTimeAsync(byte[] NeighborId)
+    {
+      log.Trace("(NeighborId:'{0}')", NeighborId.ToHex());
+
+      bool res = false;
+
+      DatabaseLock lockObject = UnitOfWork.NeighborLock;
+      await unitOfWork.AcquireLockAsync(lockObject);
+      try
+      {
+        Neighbor neighbor = (await GetAsync(n => n.NeighborId == NeighborId)).FirstOrDefault();
+        if (neighbor != null)
+        {
+          neighbor.LastRefreshTime = DateTime.UtcNow;
+          Update(neighbor);
+          await unitOfWork.SaveThrowAsync();
+        }
+        else
+        {
+          // Between the check couple of lines above and here, the requesting server stop being our neighbor
+          // we can ignore it now and proceed as this does no harm and the requesting server will be informed later.
+          log.Error("Client ID '{0}' is no longer our neighbor.", NeighborId.ToHex());
+        }
+      }
+      catch (Exception e)
+      {
+        log.Error("Exception occurred while trying to update LastRefreshTime of neighbor ID '{0}': {1}", NeighborId.ToHex(), e.ToString());
+      }
+
+      unitOfWork.ReleaseLock(lockObject);
+
+      log.Trace("(-):{0}", res);
+      return res;
+    }
+
+
+
+
+    /// <summary>
     /// Saves activities of a neighbor from the memory to the database. This is done when the neighborhood initialization process is finished.
     /// </summary>
     /// <param name="ActivityDatabase">List of activities received from the neighbor mapped by their full ID.</param>
@@ -315,5 +359,31 @@ namespace ProximityServer.Data.Repositories
       log.Trace("(-):{0}", res);
       return res;
     }
+
+
+
+
+    /// <summary>
+    /// Checks whether the server is the nearest server to a given location.
+    /// </summary>
+    /// <param name="TargetLocation">Target GPS location.</param>
+    /// <param name="IgnoreServerIds">List of network IDs that should be ignored.</param>
+    /// <param name="NearestServerId">If the result is false, this is filled with network identifier of a neighbor server that is nearest to the target location.</param>
+    /// <param name="Threshold">Optionally, threshold value which allows the function to return true even if there exists a neighbor server that is actually closer 
+    /// to the target location, but it is only slightly closer than the proximity server.</param>
+    /// <returns>true if the server is the nearest proximity server to the target location, false if the server knows at least one other server that is closer
+    /// or if the function fails.</returns>
+    public async Task<ServerContactInfo> GetServerContactInfoAsync(byte[] NeighborId)
+    {
+      log.Trace("(NeighborId:'{0}')", NeighborId);
+
+      Neighbor neighbor = (await GetAsync(n => n.NeighborId == NeighborId, null, true)).FirstOrDefault();
+      ServerContactInfo res = neighbor.GetServerContactInfo();
+
+      log.Trace("(-):{0}", res != null ? "ServerContactInfo" : "null");
+      return res;
+    }
+
+
   }
 }

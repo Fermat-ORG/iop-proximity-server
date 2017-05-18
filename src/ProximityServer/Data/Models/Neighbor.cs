@@ -8,9 +8,11 @@ using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 using IopCommon;
+using Iop.Proximityserver;
 
 namespace ProximityServer.Data.Models
 {
+#warning TODO: create an abstract base class for neighbors and followers and unite the common functionality 
   /// <summary>
   /// Database representation of a proximity server neighbor. A neighbor is another proximity server within the proximity server's 
   /// neighborhood, which was announced to the proximity server by its LOC server. There are two directions of a neighborhood relationship,
@@ -70,6 +72,7 @@ namespace ProximityServer.Data.Models
     [Range(-180, 180)]
     public decimal LocationLongitude { get; set; }
 
+#warning TODO: add specific boolean value for finished initialization and leave LastRefreshTime just to be the refresh time
     /// <summary>
     /// Time of the last refresh message received from the neighbor.
     /// <para>
@@ -82,5 +85,30 @@ namespace ProximityServer.Data.Models
 
     /// <summary>Number of shared activities that the proximity server received from this neighbor.</summary>
     public int SharedActivities { get; set; }
+
+
+    /// <summary>
+    /// Constructs ServerContactInfo representation of the neighbor's contact information.
+    /// </summary>
+    /// <returns>ServerContactInfo structure or null if the function fails.</returns>
+    public ServerContactInfo GetServerContactInfo()
+    {
+      log.Trace("()");
+
+      ServerContactInfo res = null;
+      ServerContactInfo sci = new ServerContactInfo();
+      sci.NetworkId = ProtocolHelper.ByteArrayToByteString(this.NeighborId);
+      sci.PrimaryPort = (uint)this.PrimaryPort;
+      IPAddress ipAddr = null;
+      if (IPAddress.TryParse(this.IpAddress, out ipAddr))
+      {
+        sci.IpAddress = ProtocolHelper.ByteArrayToByteString(ipAddr.GetAddressBytes());
+        res = sci;
+      }
+      else log.Error("Neighbor ID '{0}' has invalid IP address '{1}'.", this.NeighborId.ToHex(), this.IpAddress);
+
+      log.Trace("(-):{0}", res != null ? "ServerContactInfo" : "null");
+      return res;
+    }
   }
 }

@@ -65,7 +65,7 @@ namespace ProximityServer.Network
     private object activitySearchResultCacheLock = new object();
 
     /// <summary>Cache for activity search result queries.</summary>
-    private List<ActivityNetworkInformation> activitySearchResultCache;
+    private List<ActivityQueryInformation> activitySearchResultCache;
 
     /// <summary>
     /// Timer for activity search result cache expiration. When the timer's routine is called, 
@@ -161,7 +161,7 @@ namespace ProximityServer.Network
     /// Saves search results to the client session cache.
     /// </summary>
     /// <param name="SearchResults">Search results to save.</param>
-    public void SaveActivitySearchResults(List<ActivityNetworkInformation> SearchResults)
+    public void SaveActivitySearchResults(List<ActivityQueryInformation> SearchResults)
     {
       log.Trace("(SearchResults.GetHashCode():{0})", SearchResults.GetHashCode());
 
@@ -211,15 +211,15 @@ namespace ProximityServer.Network
     /// <param name="Index">Index of the first item to retrieve.</param>
     /// <param name="Count">Number of items to retrieve.</param>
     /// <returns>A copy of search results loaded from the cache or null if the required item range is not available.</returns>
-    public List<ActivityNetworkInformation> GetActivitySearchResults(int Index, int Count)
+    public List<ActivityQueryInformation> GetActivitySearchResults(int Index, int Count)
     {
       log.Trace("()");
 
-      List<ActivityNetworkInformation> res = null;
+      List<ActivityQueryInformation> res = null;
       lock (activitySearchResultCacheLock)
       {
         if ((activitySearchResultCache != null) && (Index + Count <= activitySearchResultCache.Count))
-          res = new List<ActivityNetworkInformation>(activitySearchResultCache.GetRange(Index, Count));
+          res = new List<ActivityQueryInformation>(activitySearchResultCache.GetRange(Index, Count));
       }
 
       log.Trace("(-):*.Count={0}", res != null ? res.Count.ToString() : "N/A");
@@ -234,7 +234,7 @@ namespace ProximityServer.Network
     /// this has to match the current search results, otherwise it means the results have been replaced already.</param>
     private void ActivitySearchResultCacheTimerCallback(object State)
     {
-      List<ActivityNetworkInformation> searchResults = (List<ActivityNetworkInformation>)State;
+      List<ActivityQueryInformation> searchResults = (List<ActivityQueryInformation>)State;
       log.Trace("(State.GetHashCode():{0})", searchResults.GetHashCode());
 
       lock (activitySearchResultCacheLock)

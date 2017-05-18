@@ -421,8 +421,8 @@ namespace ProximityServer.Network
         }
 
         // We consider a fresh LOC info to be accurate, so we do not want to delete the neighbors received here
-        // and hence we update their refresh time.
-        existingNeighbor.LastRefreshTime = DateTime.UtcNow;
+        // and hence we update their refresh time. We can only do this if the neighbor finished the initialization process.
+        if (existingNeighbor.LastRefreshTime != null) existingNeighbor.LastRefreshTime = DateTime.UtcNow;
 
         UnitOfWork.NeighborRepository.Update(existingNeighbor);
         res.SaveDb = true;

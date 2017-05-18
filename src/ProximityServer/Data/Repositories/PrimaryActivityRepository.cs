@@ -136,13 +136,14 @@ namespace ProximityServer.Data.Repositories
     /// expiration date or its location is changed.</para>
     /// </summary>
     /// <param name="UpdateRequest">Update request received from the client.</param>
+    /// <param name="Signature">Signature of the updated activity data from the client.</param>
     /// <param name="OwnerIdentityId">Network ID of the client who requested the update.</param>
     /// <param name="NearestServerId">If the result is Status.ErrorRejected, this is filled with network identifier of a neighbor server that is nearest to the target location.</param>
     /// <returns>Status.Ok if the function succeeds, 
     /// Status.ErrorNotFound if the activity to update does not exist,
     /// Status.ErrorRejected if the update was rejected and the client should migrate the activity to closest proximity server,
     /// Status.ErrorInternal otherwise.</returns>
-    public async Task<Iop.Shared.Status> UpdateAndPropagateAsync(UpdateActivityRequest UpdateRequest, byte[] OwnerIdentityId, StrongBox<byte[]> NearestServerId)
+    public async Task<Iop.Shared.Status> UpdateAndPropagateAsync(UpdateActivityRequest UpdateRequest, byte[] Signature, byte[] OwnerIdentityId, StrongBox<byte[]> NearestServerId)
     {
       log.Trace("(UpdateRequest.Activity.Id:{0},OwnerIdentityId:'{1}')", UpdateRequest.Activity.Id, OwnerIdentityId.ToHex());
 
@@ -187,17 +188,23 @@ namespace ProximityServer.Data.Repositories
               // If it should not be migrated, we update the activity in our database.
               if (!migrateActivity)
               {
+                SignedActivityInformation signedActivityInformation = new SignedActivityInformation()
+                {
+                  Activity = activityInformation,
+                  Signature = ProtocolHelper.ByteArrayToByteString(Signature)
+                };
+
                 bool propagateChange = false;
                 if (!UpdateRequest.NoPropagation)
                 {
-                  PrimaryActivity updatedActivity = ActivityBase.FromActivityInformation<PrimaryActivity>(activityInformation);
+                  PrimaryActivity updatedActivity = ActivityBase.FromSignedActivityInformation<PrimaryActivity>(signedActivityInformation);
                   ActivityChange changes = existingActivity.CompareChangeTo(updatedActivity);
                   
                   // If only changes in the activity are related to location or expiration time, the activity update is not propagated to the neighborhood.
                   propagateChange = (changes & ~(ActivityChange.LocationLatitude | ActivityChange.LocationLongitude | ActivityChange.ExpirationTime)) != 0;
                 }
 
-                existingActivity.CopyFromActivityInformation(activityInformation);
+                existingActivity.CopyFromSignedActivityInformation(signedActivityInformation);
 
                 Update(existingActivity);
 

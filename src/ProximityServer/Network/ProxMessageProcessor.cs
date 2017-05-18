@@ -114,6 +114,10 @@ namespace ProximityServer.Network
                         responseMessage = ProcessMessageListRolesRequest(client, incomingMessage);
                         break;
 
+                      case SingleRequest.RequestTypeOneofCase.GetActivityInformation:
+                        responseMessage = await ProcessMessageGetActivityInformationRequestAsync(client, incomingMessage);
+                        break;
+
                       default:
                         log.Warn("Invalid request type '{0}'.", singleRequest.RequestTypeCase);
                         break;
@@ -558,6 +562,77 @@ namespace ProximityServer.Network
     }
 
 
+    /// <summary>
+    /// Processes GetActivityInformationRequest message from client.
+    /// <para>Obtains information about activity managed by the proximity server or any of its neighbors.</para>
+    /// </summary>
+    /// <param name="Client">Client that sent the request.</param>
+    /// <param name="RequestMessage">Full request message.</param>
+    /// <returns>Response message to be sent to the client.</returns>
+    public async Task<ProxProtocolMessage> ProcessMessageGetActivityInformationRequestAsync(IncomingClient Client, ProxProtocolMessage RequestMessage)
+    {
+      log.Trace("()");
+
+      ProxProtocolMessage res = null;
+      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Client, null, out res))
+      {
+        log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+        return res;
+      }
+
+
+      ProxMessageBuilder messageBuilder = Client.MessageBuilder;
+      GetActivityInformationRequest getActivityInformationRequest = RequestMessage.Request.SingleRequest.GetActivityInformation;
+      if (getActivityInformationRequest == null) getActivityInformationRequest = new GetActivityInformationRequest();
+
+      uint activityId = getActivityInformationRequest.Id;
+      byte[] ownerIdentityId = getActivityInformationRequest.OwnerNetworkId.ToByteArray();
+      bool activityFullIdValid = (activityId != 0) && (ownerIdentityId.Length == ProtocolHelper.NetworkIdentifierLength);
+      if (activityFullIdValid)
+      {
+        using (UnitOfWork unitOfWork = new UnitOfWork())
+        {
+          ServerContactInfo primaryContactInfo = null;
+          ActivityBase activity = (await unitOfWork.PrimaryActivityRepository.GetAsync(a => (a.ActivityId == activityId) && (a.OwnerIdentityId == ownerIdentityId))).FirstOrDefault();
+          if (activity == null)
+          {
+            activity = (await unitOfWork.NeighborActivityRepository.GetAsync(a => (a.ActivityId == activityId) && (a.OwnerIdentityId == ownerIdentityId))).FirstOrDefault();
+            byte[] primaryServerId = (activity as NeighborActivity).PrimaryServerId;
+            primaryContactInfo = await unitOfWork.NeighborRepository.GetServerContactInfoAsync(primaryServerId);
+            if (primaryContactInfo == null)
+            {
+              log.Warn("Activity ID {0}, owner identity ID '{1}' was managed by neighbor ID '{2}' that can't be found.", activityId, ownerIdentityId.ToHex(), primaryServerId.ToHex());
+              res = messageBuilder.CreateErrorNotFoundResponse(RequestMessage);
+            }
+          }
+
+          if (res == null)
+          {
+            if (activity != null)
+            {
+              ActivityQueryInformation queryInfo = activity.ToActivityQueryInformation(primaryContactInfo);
+              res = messageBuilder.CreateGetActivityInformationResponse(RequestMessage, queryInfo);
+            }
+            else
+            {
+              log.Trace("Activity ID {0}, owner identity ID '{1}' not found.", activityId, ownerIdentityId.ToHex());
+              res = messageBuilder.CreateErrorNotFoundResponse(RequestMessage);
+            }
+          }
+        }
+      }
+      else
+      {
+        if (activityId == 0) log.Trace("Activity ID is 0.");
+        else log.Trace("Invalid length of owner activity ID - {0} bytes.", ownerIdentityId.Length);
+        res = messageBuilder.CreateErrorNotFoundResponse(RequestMessage);
+      }
+
+      log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+      return res;
+    }
+
+
 
     /// <summary>
     /// Processes StartConversationRequest message from client.
@@ -703,6 +778,10 @@ namespace ProximityServer.Network
 
       ProxMessageBuilder messageBuilder = Client.MessageBuilder;
       CreateActivityRequest createActivityRequest = RequestMessage.Request.ConversationRequest.CreateActivity;
+      if (createActivityRequest == null) createActivityRequest = new CreateActivityRequest();
+      if (createActivityRequest.Activity == null) createActivityRequest.Activity = new ActivityInformation();
+      if (createActivityRequest.Activity.ProfileServerContact == null) createActivityRequest.Activity.ProfileServerContact = new ServerContactInfo();
+
       ActivityInformation activityInformation = createActivityRequest.Activity;
 
       res = messageBuilder.CreateErrorInternalResponse(RequestMessage);
@@ -717,7 +796,12 @@ namespace ProximityServer.Network
           List<byte[]> ignoreServerIds = new List<byte[]>(createActivityRequest.IgnoreServerIds.Select(i => i.ToByteArray()));
           if (await unitOfWork.NeighborRepository.IsServerNearestToLocationAsync(activityLocation, ignoreServerIds, nearestServerId))
           {
-            PrimaryActivity activity = ActivityBase.FromActivityInformation<PrimaryActivity>(activityInformation); 
+            SignedActivityInformation signedActivityInformation = new SignedActivityInformation()
+            {
+              Activity = activityInformation,
+              Signature = RequestMessage.Request.ConversationRequest.Signature
+            };
+            PrimaryActivity activity = ActivityBase.FromSignedActivityInformation<PrimaryActivity>(signedActivityInformation); 
 
             StrongBox<int> existingActivityId = new StrongBox<int>(0);
             if (await unitOfWork.PrimaryActivityRepository.CreateAndPropagateAsync(activity, existingActivityId))
@@ -729,6 +813,7 @@ namespace ProximityServer.Network
               log.Debug("Activity with the activity ID {0} and owner identity ID '{1}' already exists with database ID {2}.", activity.ActivityId, activity.OwnerIdentityId.ToHex(), existingActivityId.Value);
               res = messageBuilder.CreateErrorAlreadyExistsResponse(RequestMessage);
             }
+            // else Internal error
           }
           else
           {
@@ -778,7 +863,8 @@ namespace ProximityServer.Network
         using (UnitOfWork unitOfWork = new UnitOfWork())
         {
           StrongBox<byte[]> nearestServerId = new StrongBox<byte[]>(null);
-          Status status = await unitOfWork.PrimaryActivityRepository.UpdateAndPropagateAsync(updateActivityRequest, Client.IdentityId, nearestServerId);
+          byte[] signature = RequestMessage.Request.ConversationRequest.Signature.ToByteArray();
+          Status status = await unitOfWork.PrimaryActivityRepository.UpdateAndPropagateAsync(updateActivityRequest, signature, Client.IdentityId, nearestServerId);
           switch (status)
           {
             case Status.Ok:
@@ -832,6 +918,7 @@ namespace ProximityServer.Network
 
       ProxMessageBuilder messageBuilder = Client.MessageBuilder;
       DeleteActivityRequest deleteActivityRequest = RequestMessage.Request.ConversationRequest.DeleteActivity;
+      if (deleteActivityRequest == null) deleteActivityRequest = new DeleteActivityRequest();
 
       res = messageBuilder.CreateErrorInternalResponse(RequestMessage);
       using (UnitOfWork unitOfWork = new UnitOfWork())
@@ -839,18 +926,16 @@ namespace ProximityServer.Network
         StrongBox<bool> notFound = new StrongBox<bool>(false);
         if (await unitOfWork.PrimaryActivityRepository.DeleteAndPropagateAsync(deleteActivityRequest.Id, Client.IdentityId, notFound))
         {
-          if (!notFound.Value)
-          {
-            // The activity was deleted from the database and this change will be propagated to the neighborhood.
-            log.Debug("Activity ID {0}, owner ID '{1}' deleted.", deleteActivityRequest.Id, Client.IdentityId);
-            res = messageBuilder.CreateDeleteActivityResponse(RequestMessage);
-          }
-          else
-          {
-            // Activity of given ID not found among activities created by the client.
-            res = messageBuilder.CreateErrorNotFoundResponse(RequestMessage);
-          }
+          // The activity was deleted from the database and this change will be propagated to the neighborhood.
+          log.Debug("Activity ID {0}, owner ID '{1}' deleted.", deleteActivityRequest.Id, Client.IdentityId);
+          res = messageBuilder.CreateDeleteActivityResponse(RequestMessage);
         }
+        else
+        {
+          // Activity of given ID not found among activities created by the client.
+          res = messageBuilder.CreateErrorNotFoundResponse(RequestMessage);
+        }
+        // else Internal error
       }
 
       log.Trace("(-):*.Response.Status={0}", res.Response.Status);
@@ -909,8 +994,10 @@ namespace ProximityServer.Network
         return res;
       }
 
+
       ProxMessageBuilder messageBuilder = Client.MessageBuilder;
       ActivitySearchRequest activitySearchRequest = RequestMessage.Request.ConversationRequest.ActivitySearch;
+      if (activitySearchRequest == null) activitySearchRequest = new ActivitySearchRequest();
 
       ProxProtocolMessage errorResponse;
       if (InputValidators.ValidateActivitySearchRequest(activitySearchRequest, messageBuilder, RequestMessage, out errorResponse))
@@ -923,7 +1010,6 @@ namespace ProximityServer.Network
           {
             uint maxResults = activitySearchRequest.MaxTotalRecordCount;
             uint maxResponseResults = activitySearchRequest.MaxResponseRecordCount;
-            uint activityIdFilter = activitySearchRequest.Id;
             byte[] ownerIdFilter = (activitySearchRequest.OwnerNetworkId != null) && (activitySearchRequest.OwnerNetworkId.Length > 0) ? activitySearchRequest.OwnerNetworkId.ToByteArray() : null;
             string typeFilter = activitySearchRequest.Type;
             DateTime? startNotAfterFilter = activitySearchRequest.StartNotAfter != 0 ? ProtocolHelper.UnixTimestampMsToDateTime(activitySearchRequest.StartNotAfter) : null;
@@ -935,8 +1021,8 @@ namespace ProximityServer.Network
             watch.Start();
 
             // First, we try to find enough results among primary activities of this proximity server.
-            List<ActivityNetworkInformation> searchResultsNeighborhood = new List<ActivityNetworkInformation>();
-            List<ActivityNetworkInformation> searchResultsLocal = await ActivitySearchAsync(unitOfWork, unitOfWork.PrimaryActivityRepository, maxResults, activityIdFilter, ownerIdFilter, typeFilter,
+            List<ActivityQueryInformation> searchResultsNeighborhood = new List<ActivityQueryInformation>();
+            List<ActivityQueryInformation> searchResultsLocal = await ActivitySearchAsync(unitOfWork, unitOfWork.PrimaryActivityRepository, maxResults, ownerIdFilter, typeFilter,
               startNotAfterFilter, expirationNotBeforeFilter, locationFilter, radiusFilter, extraDataFilter, watch);
             if (searchResultsLocal != null)
             {
@@ -947,7 +1033,7 @@ namespace ProximityServer.Network
               {
                 localServerOnly = false;
                 maxResults -= (uint)searchResultsLocal.Count;
-                searchResultsNeighborhood = await ActivitySearchAsync(unitOfWork, unitOfWork.NeighborActivityRepository, maxResults, activityIdFilter, ownerIdFilter, typeFilter,
+                searchResultsNeighborhood = await ActivitySearchAsync(unitOfWork, unitOfWork.NeighborActivityRepository, maxResults, ownerIdFilter, typeFilter,
                   startNotAfterFilter, expirationNotBeforeFilter, locationFilter, radiusFilter, extraDataFilter, watch);
                 if (searchResultsNeighborhood == null)
                 {
@@ -961,9 +1047,9 @@ namespace ProximityServer.Network
                 // Now we have all required results in searchResultsLocal and searchResultsNeighborhood.
                 // If the number of results is small enough to fit into a single response, we send them all.
                 // Otherwise, we save them to the session context and only send first part of them.
-                List<ActivityNetworkInformation> allResults = searchResultsLocal;
+                List<ActivityQueryInformation> allResults = searchResultsLocal;
                 allResults.AddRange(searchResultsNeighborhood);
-                List<ActivityNetworkInformation> responseResults = allResults;
+                List<ActivityQueryInformation> responseResults = allResults;
                 log.Debug("Total number of matching activities is {0}, from which {1} are local, {2} are from neighbors.", allResults.Count, searchResultsLocal.Count, searchResultsNeighborhood.Count);
                 if (maxResponseResults < allResults.Count)
                 {
@@ -972,7 +1058,7 @@ namespace ProximityServer.Network
                   Client.SaveActivitySearchResults(allResults);
 
                   // And send the maximum we can in the response.
-                  responseResults = new List<ActivityNetworkInformation>();
+                  responseResults = new List<ActivityQueryInformation>();
                   responseResults.AddRange(allResults.GetRange(0, (int)maxResponseResults));
                 }
 
@@ -1033,7 +1119,6 @@ namespace ProximityServer.Network
     /// <param name="UnitOfWork">Unit of work instance.</param>
     /// <param name="Repository">Primary or neighborhood activity repository, which is queried.</param>
     /// <param name="MaxResults">Maximum number of results to retrieve.</param>
-    /// <param name="ActivityIdFilter">Activity ID or 0 if activity ID is not known. If non-zero, <paramref name="OwnerIdFilter"/> must not be null.</param>
     /// <param name="OwnerIdFilter">Network identifier of the identity that created matching activities, or null if filtering by the owner is not required.</param>
     /// <param name="TypeFilter">Wildcard filter for activity type, or empty string if activity type filtering is not required.</param>
     /// <param name="StartNotAfterFilter">Maximal start time of activity, or null if start time filtering is not required.</param>
@@ -1046,13 +1131,13 @@ namespace ProximityServer.Network
     /// <remarks>In order to prevent DoS attacks, we require the search to complete within small period of time. 
     /// One the allowed time is up, the search is terminated even if we do not have enough results yet and there 
     /// is still a possibility to get more.</remarks>
-    private async Task<List<ActivityNetworkInformation>> ActivitySearchAsync<T>(UnitOfWork UnitOfWork, ActivityRepository<T> Repository, uint MaxResults, uint ActivityIdFilter, byte[] OwnerIdFilter, string TypeFilter, DateTime? StartNotAfterFilter, DateTime? ExpirationNotBeforeFilter, GpsLocation LocationFilter, uint RadiusFilter, string ExtraDataFilter, Stopwatch TimeoutWatch) where T : ActivityBase
+    private async Task<List<ActivityQueryInformation>> ActivitySearchAsync<T>(UnitOfWork UnitOfWork, ActivityRepository<T> Repository, uint MaxResults, byte[] OwnerIdFilter, string TypeFilter, DateTime? StartNotAfterFilter, DateTime? ExpirationNotBeforeFilter, GpsLocation LocationFilter, uint RadiusFilter, string ExtraDataFilter, Stopwatch TimeoutWatch) where T : ActivityBase
     {
-      log.Trace("(Repository:{0},MaxResults:{1},ActivityIdFilter:{2},OwnerIdFilter:'{3}',TypeFilter:'{4}',StartNotAfterFilter:{5},ExpirationNotBeforeFilter:{6},LocationFilter:[{7}],RadiusFilter:{8},ExtraDataFilter:'{9}')",
-        Repository, MaxResults, ActivityIdFilter, OwnerIdFilter != null ? OwnerIdFilter.ToHex() : "", TypeFilter, StartNotAfterFilter != null ? StartNotAfterFilter.Value.ToString("yyyy-MM-dd HH:mm:ss") : "null",
+      log.Trace("(Repository:{0},MaxResults:{1},OwnerIdFilter:'{2}',TypeFilter:'{3}',StartNotAfterFilter:{4},ExpirationNotBeforeFilter:{5},LocationFilter:[{6}],RadiusFilter:{7},ExtraDataFilter:'{8}')",
+        Repository, MaxResults, OwnerIdFilter != null ? OwnerIdFilter.ToHex() : "", TypeFilter, StartNotAfterFilter != null ? StartNotAfterFilter.Value.ToString("yyyy-MM-dd HH:mm:ss") : "null",
         ExpirationNotBeforeFilter != null ? ExpirationNotBeforeFilter.Value.ToString("yyyy-MM-dd HH:mm:ss") : "null", LocationFilter, RadiusFilter, ExtraDataFilter);
 
-      List<ActivityNetworkInformation> res = new List<ActivityNetworkInformation>();
+      List<ActivityQueryInformation> res = new List<ActivityQueryInformation>();
 
       uint batchSize = Math.Max(ActivitySearchBatchSizeMin, (uint)(MaxResults * ActivitySearchBatchSizeMaxFactor));
       uint offset = 0;
@@ -1071,16 +1156,8 @@ namespace ProximityServer.Network
         List<Neighbor> neighbors = (await UnitOfWork.NeighborRepository.GetAsync(null, null, true)).ToList();
         foreach (Neighbor neighbor in neighbors)
         {
-          ServerContactInfo sci = new ServerContactInfo();
-          sci.NetworkId = ProtocolHelper.ByteArrayToByteString(neighbor.NeighborId);
-          sci.PrimaryPort = (uint)neighbor.PrimaryPort;
-          IPAddress ipAddr = null;
-          if (IPAddress.TryParse(neighbor.IpAddress, out ipAddr))
-          {
-            sci.IpAddress = ProtocolHelper.ByteArrayToByteString(ipAddr.GetAddressBytes());
-            neighborServerContactInfo.Add(neighbor.NeighborId, sci);
-          }
-          else log.Error("Neighbor ID '{0}' has invalid IP address '{1}'.", neighbor.NeighborId.ToHex(), neighbor.IpAddress);
+          ServerContactInfo sci = neighbor.GetServerContactInfo();
+          if (sci != null) neighborServerContactInfo.Add(neighbor.NeighborId, sci);
         }
       }
 
@@ -1093,7 +1170,7 @@ namespace ProximityServer.Network
         List<T> activities = null;
         try
         {
-          activities = await Repository.ActivitySearchAsync(offset, batchSize, ActivityIdFilter, OwnerIdFilter, TypeFilter, StartNotAfterFilter, ExpirationNotBeforeFilter, LocationFilter, RadiusFilter);
+          activities = await Repository.ActivitySearchAsync(offset, batchSize, OwnerIdFilter, TypeFilter, StartNotAfterFilter, ExpirationNotBeforeFilter, LocationFilter, RadiusFilter);
           noMoreResults = (activities == null) || (activities.Count < batchSize);
           if (noMoreResults)
             log.Debug("Received {0}/{1} results from repository, no more results available.", activities != null ? activities.Count : 0, batchSize);
@@ -1145,21 +1222,11 @@ namespace ProximityServer.Network
               }
 
               // Convert activity to search result format.
-              ActivityNetworkInformation ani = new ActivityNetworkInformation()
-              {
-                IsPrimary = isPrimary,
-                Activity = activity.ToActivityInformation()
-              };
-
+              ServerContactInfo serverContactInfo = null;
               if (isPrimary)
               {
                 byte[] primaryServerId = (activity as NeighborActivity).PrimaryServerId;
-                ServerContactInfo serverContactInfo = null;
-                if (neighborServerContactInfo.TryGetValue(primaryServerId, out serverContactInfo))
-                {
-                  ani.PrimaryServer = serverContactInfo;
-                }
-                else
+                if (!neighborServerContactInfo.TryGetValue(primaryServerId, out serverContactInfo))
                 {
                   // This can actually happen because the search operation is not atomic.
                   // It means that neighbor was deleted before we finished the search operation.
@@ -1168,9 +1235,11 @@ namespace ProximityServer.Network
                 }
               }
 
+              ActivityQueryInformation aqi = activity.ToActivityQueryInformation(serverContactInfo);
+
               accepted++;
 
-              res.Add(ani);
+              res.Add(aqi);
               if (res.Count >= MaxResults)
               {
                 log.Debug("Target number of results {0} has been reached.", MaxResults);
@@ -1212,8 +1281,10 @@ namespace ProximityServer.Network
         return res;
       }
 
+
       ProxMessageBuilder messageBuilder = Client.MessageBuilder;
       ActivitySearchPartRequest activitySearchPartRequest = RequestMessage.Request.ConversationRequest.ActivitySearchPart;
+      if (activitySearchPartRequest == null) activitySearchPartRequest = new ActivitySearchPartRequest();
 
       int cacheResultsCount;
       if (Client.GetActivitySearchResultsInfo(out cacheResultsCount))
@@ -1225,7 +1296,7 @@ namespace ProximityServer.Network
 
         if (recordIndexValid && recordCountValid)
         {
-          List<ActivityNetworkInformation> cachedResults = Client.GetActivitySearchResults((int)activitySearchPartRequest.RecordIndex, (int)activitySearchPartRequest.RecordCount);
+          List<ActivityQueryInformation> cachedResults = Client.GetActivitySearchResults((int)activitySearchPartRequest.RecordIndex, (int)activitySearchPartRequest.RecordCount);
           if (cachedResults != null)
           {
             res = messageBuilder.CreateActivitySearchPartResponse(RequestMessage, activitySearchPartRequest.RecordIndex, activitySearchPartRequest.RecordCount, cachedResults);
@@ -1273,8 +1344,11 @@ namespace ProximityServer.Network
         return res;
       }
 
+
       ProxMessageBuilder messageBuilder = Client.MessageBuilder;
       StartNeighborhoodInitializationRequest startNeighborhoodInitializationRequest = RequestMessage.Request.ConversationRequest.StartNeighborhoodInitialization;
+      if (startNeighborhoodInitializationRequest == null) startNeighborhoodInitializationRequest = new StartNeighborhoodInitializationRequest();
+
       int primaryPort = (int)startNeighborhoodInitializationRequest.PrimaryPort;
       int neighborPort = (int)startNeighborhoodInitializationRequest.NeighborPort;
       byte[] ipAddressBytes = startNeighborhoodInitializationRequest.IpAddress.ToByteArray();
@@ -1464,7 +1538,10 @@ namespace ProximityServer.Network
         GpsLocation location = activity.GetLocation();
         SharedActivityUpdateItem updateItem = new SharedActivityUpdateItem()
         {
-          Add = activity.ToActivityInformation()
+          Add = new SharedActivityAddItem()
+          {
+            SignedActivity = activity.ToSignedActivityInformation()
+          }
         };
 
         res.Request.ConversationRequest.NeighborhoodSharedActivityUpdate.Items.Add(updateItem);
@@ -1592,8 +1669,10 @@ namespace ProximityServer.Network
         return res;
       }
 
+
       ProxMessageBuilder messageBuilder = Client.MessageBuilder;
       NeighborhoodSharedActivityUpdateRequest neighborhoodSharedActivityUpdateRequest = RequestMessage.Request.ConversationRequest.NeighborhoodSharedActivityUpdate;
+      if (neighborhoodSharedActivityUpdateRequest == null) neighborhoodSharedActivityUpdateRequest = new NeighborhoodSharedActivityUpdateRequest();
 
       bool error = false;
       byte[] neighborId = Client.IdentityId;
@@ -1635,6 +1714,9 @@ namespace ProximityServer.Network
       // If it reaches the number of items, all items are valid.
       int itemIndex = 0;
 
+      // doRefresh is true, if at least one of the update items is of type Refresh.
+      bool doRefresh = false;
+
       // List of string representation of full ID (owner network IDs + activity ID) of activities that were validated in this batch already.
       // It is used to find multiple updates within the batch that work with the same activity, which is not allowed.
       HashSet<string> usedActivitiesIdsInBatch = new HashSet<string>(StringComparer.Ordinal);
@@ -1650,6 +1732,7 @@ namespace ProximityServer.Network
           // but it will be checked prior any problem could be caused by that.
           if (updateItem.ActionTypeCase == SharedActivityUpdateItem.ActionTypeOneofCase.Add) sharedActivitiesCount++;
           else if (updateItem.ActionTypeCase == SharedActivityUpdateItem.ActionTypeOneofCase.Delete) sharedActivitiesCount--;
+          else if (updateItem.ActionTypeCase == SharedActivityUpdateItem.ActionTypeOneofCase.Refresh) doRefresh = true;
         }
         else
         {
@@ -1660,20 +1743,25 @@ namespace ProximityServer.Network
         itemIndex++;
       }
 
-      log.Debug("{0}/{1} update items passed validation.", itemIndex, neighborhoodSharedActivityUpdateRequest.Items.Count);
+      log.Debug("{0}/{1} update items passed validation, doRefresh is {2}.", itemIndex, neighborhoodSharedActivityUpdateRequest.Items.Count, doRefresh);
 
 
       // Now we save all valid items up to the first invalid (or all if all are valid).
-      // But if we detect duplicity of identity with Add operation, or we can not find identity 
+      // But if we detect duplicity of activity with Add operation, or we can not find activity 
       // with Change or Delete action, we end earlier.
       // We will process the data in batches of max 100 items, not to occupy the database locks for too long.
-      log.Trace("Saving {0} valid profiles changes.", itemIndex);
+      log.Trace("Saving {0} valid activity changes.", itemIndex);
 
       // Index of the update item currently being processed.
       int index = 0;
 
       using (UnitOfWork unitOfWork = new UnitOfWork())
       {
+        // If there was a refresh request, we process it first as it does no harm and we do not need to care about it later.
+        if (doRefresh)
+          await unitOfWork.NeighborRepository.UpdateNeighborLastRefreshTimeAsync(neighborId);
+
+
         // Batch number just for logging purposes.
         int batchNumber = 1;
         while (index < itemIndex)
@@ -1684,7 +1772,7 @@ namespace ProximityServer.Network
           DatabaseLock[] lockObjects = new DatabaseLock[] { UnitOfWork.NeighborActivityLock, UnitOfWork.NeighborLock };
           using (IDbContextTransaction transaction = await unitOfWork.BeginTransactionWithLockAsync(lockObjects))
           {
-            bool success = false;
+            bool dbSuccess = false;
             bool saveDb = false;
             try
             {
@@ -1697,13 +1785,16 @@ namespace ProximityServer.Network
                   SharedActivityUpdateItem updateItem = neighborhoodSharedActivityUpdateRequest.Items[index];
 
                   StoreSharedActivityUpdateResult storeResult = await StoreSharedActivityUpdateToDatabaseAsync(unitOfWork, updateItem, index, neighbor, messageBuilder, RequestMessage);
-                  if (storeResult.SaveDb) saveDb = true;
-                  if (storeResult.Error) error = true;
-                  if (storeResult.ErrorResponse != null) res = storeResult.ErrorResponse;
+                  if (storeResult.Error)
+                  {
+                    // Error here means that we want to save all already processed items to the database
+                    // and quit the loop right after that, the response is filled with error response already.
+                    res = storeResult.ErrorResponse;
+                    error = true;
+                    break;
+                  }
 
-                  // Error here means that we want to save all already processed items to the database
-                  // and quit the loop right after that, the response is filled with error response already.
-                  if (error) break;
+                  if (storeResult.SaveDb) saveDb = true;
 
                   index++;
                   if (index >= itemIndex) break;
@@ -1714,26 +1805,29 @@ namespace ProximityServer.Network
                   unitOfWork.NeighborRepository.Update(neighbor);
                   saveDb = true;
                 }
+
+                if (saveDb)
+                {
+                  await unitOfWork.SaveThrowAsync();
+                  transaction.Commit();
+                }
+                dbSuccess = true;
               }
               else
               {
                 log.Error("Unable to find neighbor ID '{0}', sending ERROR_REJECTED response.", neighborId.ToHex());
                 res = messageBuilder.CreateErrorRejectedResponse(RequestMessage);
+                error = true;
               }
-
-              if (saveDb)
-              {
-                await unitOfWork.SaveThrowAsync();
-                transaction.Commit();
-              }
-              success = true;
             }
             catch (Exception e)
             {
               log.Error("Exception occurred: {0}", e.ToString());
+              res = messageBuilder.CreateErrorInternalResponse(RequestMessage);
+              error = true;
             }
 
-            if (!success)
+            if (!dbSuccess)
             {
               log.Warn("Rolling back transaction.");
               unitOfWork.SafeTransactionRollback(transaction);
@@ -1795,95 +1889,103 @@ namespace ProximityServer.Network
         ErrorResponse = null,
       };
 
-      switch (UpdateItem.ActionTypeCase)
+      try
       {
-        case SharedActivityUpdateItem.ActionTypeOneofCase.Add:
-          {
-            if (Neighbor.SharedActivities >= ActivityBase.MaxPrimaryActivities)
+        switch (UpdateItem.ActionTypeCase)
+        {
+          case SharedActivityUpdateItem.ActionTypeOneofCase.Add:
             {
-              log.Warn("Neighbor ID '{0}' already shares the maximum number of profiles.", Neighbor.NeighborId.ToHex());
-              res.ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, UpdateItemIndex + ".add");
-              res.Error = true;
+              if (Neighbor.SharedActivities >= ActivityBase.MaxPrimaryActivities)
+              {
+                log.Warn("Neighbor ID '{0}' already shares the maximum number of profiles.", Neighbor.NeighborId.ToHex());
+                res.ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, UpdateItemIndex + ".add");
+                res.Error = true;
+                break;
+              }
+
+              SharedActivityAddItem addItem = UpdateItem.Add;
+              uint activityId = addItem.SignedActivity.Activity.Id;
+              byte[] ownerPubKey = addItem.SignedActivity.Activity.OwnerPublicKey.ToByteArray();
+              byte[] ownerIdentityId = Crypto.Sha256(ownerPubKey);
+
+              // Activity already exists if there exists a NeighborActivity with same activity ID and owner identity ID and the same primary server ID.
+              // It may seem enough to just use activity ID and owner identity ID and not ID of its primary proximity server.
+              // However, the activity can migrate to another proximity server and we can not guarantee the order of the messages in the network,
+              // which means the delete update from old proximity server can arrive later than this add item.
+              NeighborActivity existingActivity = (await UnitOfWork.NeighborActivityRepository.GetAsync(a => (a.ActivityId == activityId) && (a.OwnerIdentityId == ownerIdentityId) && (a.PrimaryServerId == Neighbor.NeighborId))).FirstOrDefault();
+              if (existingActivity == null)
+              {
+                NeighborActivity newActivity = ActivityBase.FromSignedActivityInformation<NeighborActivity>(addItem.SignedActivity, Neighbor.NeighborId);
+
+                await UnitOfWork.NeighborActivityRepository.InsertAsync(newActivity);
+                Neighbor.SharedActivities++;
+                res.SaveDb = true;
+              }
+              else
+              {
+                log.Warn("Activity ID {0}, owner identity ID '{1}' already exists with primary proximity server ID '{2}'.", activityId, ownerIdentityId.ToHex(), Neighbor.NeighborId.ToHex());
+                res.ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, UpdateItemIndex + ".add.signedActivity.activity.id");
+                res.Error = true;
+              }
+
               break;
             }
 
-            ActivityInformation addItem = UpdateItem.Add;
-            uint activityId = addItem.Id;
-            byte[] ownerPubKey = addItem.OwnerPublicKey.ToByteArray();
-            byte[] ownerIdentityId = Crypto.Sha256(ownerPubKey);
-
-            // Activity already exists if there exists a NeighborActivity with same activity ID and owner identity ID and the same primary server ID.
-            // It may seem enough to just use activity ID and owner identit ID and not ID of its primary proximity server.
-            // However, the activity can migrate to another proximity server and we can not guarantee the order of the messages in the network,
-            // which means the delete update from old proximity server can arrive later than this add item.
-            NeighborActivity existingActivity = (await UnitOfWork.NeighborActivityRepository.GetAsync(a => (a.ActivityId == activityId) && (a.OwnerIdentityId == ownerIdentityId) && (a.PrimaryServerId == Neighbor.NeighborId))).FirstOrDefault();
-            if (existingActivity == null)
+          case SharedActivityUpdateItem.ActionTypeOneofCase.Change:
             {
-              GpsLocation location = new GpsLocation(addItem.Latitude, addItem.Longitude);
-              NeighborActivity newActivity = ActivityBase.FromActivityInformation<NeighborActivity>(addItem, Neighbor.NeighborId);
+              SharedActivityChangeItem changeItem = UpdateItem.Change;
+              uint activityId = changeItem.SignedActivity.Activity.Id;
+              byte[] ownerPubKey = changeItem.SignedActivity.Activity.OwnerPublicKey.ToByteArray();
+              byte[] ownerIdentityId = Crypto.Sha256(ownerPubKey);
 
-              await UnitOfWork.NeighborActivityRepository.InsertAsync(newActivity);
-              Neighbor.SharedActivities++;
-              res.SaveDb = true;
-            }
-            else
-            {
-              log.Warn("Activity ID {0}, owner identity ID '{1}' already exists with primary proximity server ID '{2}'.", activityId, ownerIdentityId.ToHex(), Neighbor.NeighborId.ToHex());
-              res.ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, UpdateItemIndex + ".add.id");
-              res.Error = true;
-            }
+              // Activity already exists if there exists a NeighborActivity with same activity ID and owner identity ID and the same primary server ID.
+              NeighborActivity existingActivity = (await UnitOfWork.NeighborActivityRepository.GetAsync(a => (a.ActivityId == activityId) && (a.OwnerIdentityId == ownerIdentityId) && (a.PrimaryServerId == Neighbor.NeighborId))).FirstOrDefault();
+              if (existingActivity != null)
+              {
+                existingActivity.CopyFromSignedActivityInformation(changeItem.SignedActivity);
 
-            break;
-          }
+                UnitOfWork.NeighborActivityRepository.Update(existingActivity);
+                res.SaveDb = true;
+              }
+              else
+              {
+                log.Warn("Activity ID {0}, owner identity ID '{1}' does exists with primary proximity server ID '{2}'.", activityId, ownerIdentityId.ToHex(), Neighbor.NeighborId.ToHex());
+                res.ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, UpdateItemIndex + ".change.signedActivity.activity.id");
+                res.Error = true;
+              }
 
-        case SharedActivityUpdateItem.ActionTypeOneofCase.Change:
-          {
-            ActivityInformation changeItem = UpdateItem.Change;
-            uint activityId = changeItem.Id;
-            byte[] ownerPubKey = changeItem.OwnerPublicKey.ToByteArray();
-            byte[] ownerIdentityId = Crypto.Sha256(ownerPubKey);
-
-            // Activity already exists if there exists a NeighborActivity with same activity ID and owner identity ID and the same primary server ID.
-            NeighborActivity existingActivity = (await UnitOfWork.NeighborActivityRepository.GetAsync(a => (a.ActivityId == activityId) && (a.OwnerIdentityId == ownerIdentityId) && (a.PrimaryServerId == Neighbor.NeighborId))).FirstOrDefault();
-            if (existingActivity != null)
-            {
-              existingActivity.CopyFromActivityInformation(changeItem);
-
-              UnitOfWork.NeighborActivityRepository.Update(existingActivity);
-              res.SaveDb = true;
-            }
-            else
-            {
-              log.Warn("Activity ID {0}, owner identity ID '{1}' does exists with primary proximity server ID '{2}'.", activityId, ownerIdentityId.ToHex(), Neighbor.NeighborId.ToHex());
-              res.ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, UpdateItemIndex + ".change.id");
-              res.Error = true;
+              break;
             }
 
-            break;
-          }
-
-        case SharedActivityUpdateItem.ActionTypeOneofCase.Delete:
-          {
-            ActivityFullId deleteItem = UpdateItem.Delete;
-            uint activityId = deleteItem.Id;
-            byte[] ownerIdentityId = deleteItem.OwnerNetworkId.ToByteArray();
-
-            // Activity already exists if there exists a NeighborActivity with same activity ID and owner identity ID and the same primary server ID.
-            NeighborActivity existingActivity = (await UnitOfWork.NeighborActivityRepository.GetAsync(a => (a.ActivityId == activityId) && (a.OwnerIdentityId == ownerIdentityId) && (a.PrimaryServerId == Neighbor.NeighborId))).FirstOrDefault();
-            if (existingActivity != null)
+          case SharedActivityUpdateItem.ActionTypeOneofCase.Delete:
             {
-              UnitOfWork.NeighborActivityRepository.Delete(existingActivity);
-              Neighbor.SharedActivities--;
-              res.SaveDb = true;
+              SharedActivityDeleteItem deleteItem = UpdateItem.Delete;
+              uint activityId = deleteItem.Id;
+              byte[] ownerIdentityId = deleteItem.OwnerNetworkId.ToByteArray();
+
+              // Activity already exists if there exists a NeighborActivity with same activity ID and owner identity ID and the same primary server ID.
+              NeighborActivity existingActivity = (await UnitOfWork.NeighborActivityRepository.GetAsync(a => (a.ActivityId == activityId) && (a.OwnerIdentityId == ownerIdentityId) && (a.PrimaryServerId == Neighbor.NeighborId))).FirstOrDefault();
+              if (existingActivity != null)
+              {
+                UnitOfWork.NeighborActivityRepository.Delete(existingActivity);
+                Neighbor.SharedActivities--;
+                res.SaveDb = true;
+              }
+              else
+              {
+                log.Warn("Activity ID {0}, owner identity ID '{1}' does exists with primary proximity server ID '{2}'.", activityId, ownerIdentityId.ToHex(), Neighbor.NeighborId.ToHex());
+                res.ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, UpdateItemIndex + ".delete.id");
+                res.Error = true;
+              }
+              break;
             }
-            else
-            {
-              log.Warn("Activity ID {0}, owner identity ID '{1}' does exists with primary proximity server ID '{2}'.", activityId, ownerIdentityId.ToHex(), Neighbor.NeighborId.ToHex());
-              res.ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, UpdateItemIndex + ".delete.id");
-              res.Error = true;
-            }
-            break;
-          }
+        }
+      }
+      catch (Exception e)
+      {
+        log.Error("Exception occurred: {0}", e.ToString());
+        res.ErrorResponse = MessageBuilder.CreateErrorInternalResponse(RequestMessage);
+        res.Error = true;
       }
 
       log.Trace("(-):*.Error={0},*.SaveDb={1}", res.Error, res.SaveDb);
@@ -1911,7 +2013,7 @@ namespace ProximityServer.Network
 
       ProxMessageBuilder messageBuilder = Client.MessageBuilder;
       StopNeighborhoodUpdatesRequest stopNeighborhoodUpdatesRequest = RequestMessage.Request.ConversationRequest.StopNeighborhoodUpdates;
-
+      if (stopNeighborhoodUpdatesRequest == null) stopNeighborhoodUpdatesRequest = new StopNeighborhoodUpdatesRequest();
 
       byte[] followerId = Client.IdentityId;
 
@@ -2031,8 +2133,5 @@ namespace ProximityServer.Network
       log.Trace("(-):{0}", res);
       return res;
     }
-
-
-#warning zjisti jestli potrebujeme neighbor action refreshe 
   }
 }

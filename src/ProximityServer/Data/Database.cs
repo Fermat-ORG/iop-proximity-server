@@ -43,7 +43,7 @@ namespace ProximityServer.Data
       {
         if (DeleteUninitializedNeighbors()
           && DeleteUninitializedFollowers()
-          && DeleteInvalidNeighborActions()
+          && DeleteInvalidNeighborActivities()
           && DeleteInvalidNeighborhoodActions())
         {
           RegisterCronJobs();
@@ -269,10 +269,10 @@ namespace ProximityServer.Data
 
 
     /// <summary>
-    /// Finds and deletes neighbor actions for which there is no existing neighbor.
+    /// Finds and deletes neighbor activities for which there is no existing neighbor.
     /// </summary>
     /// <returns>true if the function succeeds, false otherwise.</returns>
-    private bool DeleteInvalidNeighborActions()
+    private bool DeleteInvalidNeighborActivities()
     {
       log.Info("()");
 
@@ -394,13 +394,14 @@ namespace ProximityServer.Data
 
 
     /// <summary>
-    /// Checks if any of the follower servers need refresh.
-    /// If so, a neighborhood action is created.
+    /// Checks if any of the follower servers need refresh. If so, a neighborhood action is created.
+    /// <para>This function also checks if there are unprocessed refresh neighborhood actions 
+    /// and if there are 3 such requests already, the follower is deleted as it is considered as unresponsive for too long.</para>
     /// </summary>
     public async Task CheckFollowersRefreshAsync()
     {
       log.Trace("()");
-      /*
+
       // If a follower server's LastRefreshTime is lower than this limit, it should be refreshed.
       DateTime limitLastRefreshTime = DateTime.UtcNow.AddSeconds(-Config.Configuration.FollowerRefreshTimeSeconds);
 
@@ -421,16 +422,17 @@ namespace ProximityServer.Data
             log.Debug("There are {0} followers that need refresh.", followersToRefresh.Count);
             foreach (Follower follower in followersToRefresh)
             {
-              int unprocessedRefreshProfileActions = await unitOfWork.NeighborhoodActionRepository.CountAsync(a => (a.ServerId == follower.FollowerId) && (a.Type == NeighborhoodActionType.RefreshProfiles));
+              int unprocessedRefreshProfileActions = await unitOfWork.NeighborhoodActionRepository.CountAsync(a => (a.ServerId == follower.FollowerId) && (a.Type == NeighborhoodActionType.RefreshNeighborStatus));
               if (unprocessedRefreshProfileActions < 3)
               {
                 NeighborhoodAction action = new NeighborhoodAction()
                 {
                   ServerId = follower.FollowerId,
-                  Type = NeighborhoodActionType.RefreshProfiles,
+                  Type = NeighborhoodActionType.RefreshNeighborStatus,
                   Timestamp = DateTime.UtcNow,
                   ExecuteAfter = DateTime.UtcNow,
-                  TargetIdentityId = null,
+                  TargetActivityId = 0,
+                  TargetActivityOwnerId = null,
                   AdditionalData = null
                 };
 
@@ -441,7 +443,7 @@ namespace ProximityServer.Data
               }
               else
               {
-                log.Debug("There are {0} unprocessed RefreshProfiles neighborhood actions for follower ID '{1}'. Follower will be deleted.", unprocessedRefreshProfileActions, follower.FollowerId.ToHex());
+                log.Debug("There are {0} unprocessed RefreshNeighborStatus neighborhood actions for follower ID '{1}'. Follower will be deleted.", unprocessedRefreshProfileActions, follower.FollowerId.ToHex());
                 followersToDeleteIds.Add(follower.FollowerId);
               }
             }
@@ -473,7 +475,7 @@ namespace ProximityServer.Data
           }
         }
         else log.Debug("No followers to delete now.");
-      }*/
+      }
 
       log.Trace("(-)");
     }
@@ -494,62 +496,9 @@ namespace ProximityServer.Data
         // Disable change tracking for faster multiple deletes.
         unitOfWork.Context.ChangeTracker.AutoDetectChangesEnabled = false;
 
-        // Find and delete expired primary activities.
-        DatabaseLock lockObject = UnitOfWork.PrimaryActivityLock;
-        await unitOfWork.AcquireLockAsync(lockObject);
-        try
-        {
-          List<PrimaryActivity> expiredActivities = (await unitOfWork.PrimaryActivityRepository.GetAsync(i => i.ExpirationTime < now, null, true)).ToList();
-          if (expiredActivities.Count > 0)
-          {
-            log.Debug("There are {0} expired primary activities.", expiredActivities.Count);
-            foreach (PrimaryActivity activity in expiredActivities)
-            {
-              unitOfWork.PrimaryActivityRepository.Delete(activity);
-              log.Debug("Activity ID {0}, owner ID '{1}' expired and will be deleted.", activity.ActivityId, activity.OwnerIdentityId.ToHex());
-            }
-
-            await unitOfWork.SaveThrowAsync();
-            log.Debug("{0} expired primary activities were deleted.", expiredActivities.Count);
-          }
-          else log.Debug("No expired primary activities found.");
-        }
-        catch (Exception e)
-        {
-          log.Error("Exception occurred: {0}", e.ToString());
-        }
-
-        unitOfWork.ReleaseLock(lockObject);
-
-        
-        // Find and delete expired neighbor activities.
-        lockObject = UnitOfWork.NeighborActivityLock;
-        await unitOfWork.AcquireLockAsync(lockObject);
-        try
-        {
-          List<NeighborActivity> expiredActivities = (await unitOfWork.NeighborActivityRepository.GetAsync(i => i.ExpirationTime < now, null, true)).ToList();
-          if (expiredActivities.Count > 0)
-          {
-            log.Debug("There are {0} expired neighbor activities.", expiredActivities.Count);
-            foreach (NeighborActivity activity in expiredActivities)
-            {
-              unitOfWork.NeighborActivityRepository.Delete(activity);
-              log.Debug("Activity ID {0}, owner ID '{1}' expired and will be deleted.", activity.ActivityId, activity.OwnerIdentityId.ToHex());
-            }
-
-            await unitOfWork.SaveThrowAsync();
-            log.Debug("{0} expired neighbor activities were deleted.", expiredActivities.Count);
-          }
-          else log.Debug("No expired neighbor activities found.");
-        }
-        catch (Exception e)
-        {
-          log.Error("Exception occurred: {0}", e.ToString());
-        }
-
-        unitOfWork.ReleaseLock(lockObject);
+        await unitOfWork.PrimaryActivityRepository.DeleteExpiredActivitiesAsync();
+        await unitOfWork.NeighborActivityRepository.DeleteExpiredActivitiesAsync();
       }
-
 
       log.Trace("(-)");
     }

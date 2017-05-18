@@ -56,7 +56,7 @@ namespace ProximityServer.Data.Models
     public const int MaxActivityLifeTimeHours = 24;
 
     /// <summary>Special type of activity that is used internally and should not be displayed to users.</summary>
-    public const string InternalInvalidActivityType = "<INVALID_INTERNAL>";
+    public const string InternalInvalidActivityType = "<INTERNAL>";
 
     /// <summary>Unique primary key for the database.</summary>
     /// <remarks>This is primary key - see ProximityServer.Data.Context.OnModelCreating.</remarks>
@@ -148,6 +148,13 @@ namespace ProximityServer.Data.Models
     /// </summary>
     /// <remarks>This is index - see ProximityServer.Data.Context.OnModelCreating.</remarks>
     public DateTime ExpirationTime { get; set; }
+
+    /// <summary>
+    /// Cryptographic signature of the activity information when represented with a ActivityInformation structure.
+    /// </summary>
+    [Required]
+    [MaxLength(ProtocolHelper.MaxSignatureLengthBytes)]
+    public byte[] Signature { get; set; }
 
 
     /// <summary>User defined extra data that serve for satisfying search queries in proximity server network.</summary>
@@ -275,48 +282,81 @@ namespace ProximityServer.Data.Models
 
 
     /// <summary>
-    /// Creates a new instance of activity from ActivityInformation structure.
+    /// Creates a new instance of identity from SignedActivityInformation data structure.
     /// </summary>
-    /// <param name="Activity">Description of the activity.</param>
+    /// <param name="SignedActivity">Signed description of the activity.</param>
     /// <param name="PrimaryServerId">In case of NeighborActivity, this is identifier of the primary proximity server of the activity.</param>
     /// <returns>New instance of the activity.</returns>
-    public static T FromActivityInformation<T>(ActivityInformation Activity, byte[] PrimaryServerId = null) where T:ActivityBase, new()
+    public static T FromSignedActivityInformation<T>(SignedActivityInformation SignedProfile, byte[] PrimaryServerId = null) where T : ActivityBase, new()
     {
       T res = new T();
-      res.CopyFromActivityInformation(Activity);
-
-      if (res is NeighborActivity) (res as NeighborActivity).PrimaryServerId = PrimaryServerId;
+      res.CopyFromSignedActivityInformation(SignedProfile, PrimaryServerId);
 
       return res;
     }
 
 
+
     /// <summary>
-    /// Copies values from activity information to properties of this instance of the activity.
+    /// Copies values from signed activity information to properties of this instance of the activity.
     /// </summary>
-    /// <param name="Activity">Description of the activity.</param>
-    public void CopyFromActivityInformation(ActivityInformation Activity)
+    /// <param name="SignedActivity">Signed description of the activity.</param>
+    /// <param name="PrimaryServerId">In case of NeighborActivity, this is identifier of the primary proximity server of the activity.</param>
+    public void CopyFromSignedActivityInformation(SignedActivityInformation SignedActivity, byte[] PrimaryServerId = null)
     {
-      GpsLocation activityLocation = new GpsLocation(Activity.Latitude, Activity.Longitude);
-      byte[] pubKey = Activity.OwnerPublicKey.ToByteArray();
+      ActivityInformation activity = SignedActivity.Activity;
+      GpsLocation activityLocation = new GpsLocation(activity.Latitude, activity.Longitude);
+      byte[] pubKey = activity.OwnerPublicKey.ToByteArray();
       byte[] identityId = Crypto.Sha256(pubKey);
 
-      this.Version = new SemVer(Activity.Version).ToByteArray();
-      this.ActivityId = Activity.Id;
+      this.Version = new SemVer(activity.Version).ToByteArray();
+      this.ActivityId = activity.Id;
       this.OwnerIdentityId = identityId;
       this.OwnerPublicKey = pubKey;
-      this.OwnerProfileServerId = Activity.ProfileServerContact.NetworkId.ToByteArray();
-      this.OwnerProfileServerIpAddress = Activity.ProfileServerContact.IpAddress.ToByteArray();
-      this.OwnerProfileServerPrimaryPort = (ushort)Activity.ProfileServerContact.PrimaryPort;
-      this.Type = Activity.Type;
+      this.OwnerProfileServerId = activity.ProfileServerContact.NetworkId.ToByteArray();
+      this.OwnerProfileServerIpAddress = activity.ProfileServerContact.IpAddress.ToByteArray();
+      this.OwnerProfileServerPrimaryPort = (ushort)activity.ProfileServerContact.PrimaryPort;
+      this.Type = activity.Type;
       this.LocationLatitude = activityLocation.Latitude;
       this.LocationLongitude = activityLocation.Longitude;
-      this.PrecisionRadius = Activity.Precision;
-      this.StartTime = ProtocolHelper.UnixTimestampMsToDateTime(Activity.StartTime).Value;
-      this.ExpirationTime = ProtocolHelper.UnixTimestampMsToDateTime(Activity.ExpirationTime).Value;
-      this.ExtraData = Activity.ExtraData;
+      this.PrecisionRadius = activity.Precision;
+      this.StartTime = ProtocolHelper.UnixTimestampMsToDateTime(activity.StartTime).Value;
+      this.ExpirationTime = ProtocolHelper.UnixTimestampMsToDateTime(activity.ExpirationTime).Value;
+      this.Signature = SignedActivity.Signature.ToByteArray();
+      this.ExtraData = activity.ExtraData;
+      if (this is NeighborActivity) (this as NeighborActivity).PrimaryServerId = PrimaryServerId;
     }
 
-  }
 
+    /// <summary>
+    /// Creates SignedActivityInformation representation of the activity.
+    /// </summary>
+    /// <returns>SignedActivityInformation structure describing the activity.</returns>
+    public SignedActivityInformation ToSignedActivityInformation()
+    {
+      SignedActivityInformation res = new SignedActivityInformation()
+      {
+        Activity = this.ToActivityInformation(),
+        Signature = ProtocolHelper.ByteArrayToByteString(this.Signature != null ? this.Signature : new byte[0])
+      };
+      return res;
+    }
+
+    /// <summary>
+    /// Creates ActivityQueryInformation representation of the activity.
+    /// </summary>
+    /// <param name="PrimaryServerContactInfo">Contact information to the activity's primary proximity server or null if this proximity server is the primary.</param>
+    /// <returns>ActivityQueryInformation structure describing the activity.</returns>
+    public ActivityQueryInformation ToActivityQueryInformation(ServerContactInfo PrimaryServerContactInfo)
+    {
+      bool isPrimary = this is PrimaryActivity;
+      ActivityQueryInformation res = new ActivityQueryInformation()
+      {
+        SignedActivity = this.ToSignedActivityInformation(),
+        IsPrimary = isPrimary,
+      };
+      if (!isPrimary) res.PrimaryServer = PrimaryServerContactInfo;
+      return res;
+    }
+  }
 }

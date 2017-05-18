@@ -426,6 +426,7 @@ namespace ProximityServer.Network
         case NeighborhoodActionType.AddActivity:
         case NeighborhoodActionType.ChangeActivity:
         case NeighborhoodActionType.RemoveActivity:
+        case NeighborhoodActionType.RefreshNeighborStatus:
           res = await NeighborhoodActivityUpdateAsync(Action.ServerId, Action.TargetActivityId, Action.TargetActivityOwnerId, Action.Type, Action.AdditionalData, Action.Id);
           break;
 
@@ -514,42 +515,51 @@ namespace ProximityServer.Network
                   if (requestMessage != null)
                   {
                     ProxProtocolMessage responseMessage = client.MessageBuilder.CreateErrorProtocolViolationResponse(requestMessage);
-
-                    if (requestMessage.MessageTypeCase == Message.MessageTypeOneofCase.Request)
+                    try
                     {
-                      Request request = requestMessage.Request;
-                      if (request.ConversationTypeCase == Request.ConversationTypeOneofCase.ConversationRequest)
+
+                      if (requestMessage.MessageTypeCase == Message.MessageTypeOneofCase.Request)
                       {
-                        ConversationRequest conversationRequest = request.ConversationRequest;
-                        log.Trace("Conversation request type '{0}' received.", conversationRequest.RequestTypeCase);
-                        switch (conversationRequest.RequestTypeCase)
+                        Request request = requestMessage.Request;
+                        if (request.ConversationTypeCase == Request.ConversationTypeOneofCase.ConversationRequest)
                         {
-                          case ConversationRequest.RequestTypeOneofCase.NeighborhoodSharedActivityUpdate:
-                            responseMessage = ProcessMessageNeighborhoodSharedActivityUpdateRequest(client, requestMessage);
-                            break;
+                          ConversationRequest conversationRequest = request.ConversationRequest;
+                          log.Trace("Conversation request type '{0}' received.", conversationRequest.RequestTypeCase);
+                          switch (conversationRequest.RequestTypeCase)
+                          {
+                            case ConversationRequest.RequestTypeOneofCase.NeighborhoodSharedActivityUpdate:
+                              responseMessage = ProcessMessageNeighborhoodSharedActivityUpdateRequest(client, requestMessage);
+                              break;
 
-                          case ConversationRequest.RequestTypeOneofCase.FinishNeighborhoodInitialization:
-                            responseMessage = await ProcessMessageFinishNeighborhoodInitializationRequestAsync(client, requestMessage);
-                            done = true;
-                            break;
+                            case ConversationRequest.RequestTypeOneofCase.FinishNeighborhoodInitialization:
+                              responseMessage = await ProcessMessageFinishNeighborhoodInitializationRequestAsync(client, requestMessage);
+                              done = true;
+                              break;
 
-                          default:
-                            log.Error("Invalid conversation request type '{0}' received, will retry later.", conversationRequest.RequestTypeCase);
-                            error = true;
-                            break;
+                            default:
+                              log.Error("Invalid conversation request type '{0}' received, will retry later.", conversationRequest.RequestTypeCase);
+                              error = true;
+                              break;
+                          }
+                        }
+                        else
+                        {
+                          log.Warn("Invalid conversation type '{0}' received, will retry later.", request.ConversationTypeCase);
+                          error = true;
                         }
                       }
                       else
                       {
-                        log.Warn("Invalid conversation type '{0}' received, will retry later.", request.ConversationTypeCase);
+                        log.Warn("Invalid message type '{0}' received, expected Request, will retry later.", requestMessage.MessageTypeCase);
                         error = true;
                       }
                     }
-                    else
+                    catch (Exception e)
                     {
-                      log.Warn("Invalid message type '{0}' received, expected Request, will retry later.", requestMessage.MessageTypeCase);
+                      log.Error("Exception occurred: {0}", e.ToString());
                       error = true;
                     }
+
 
                     // Send response to neighbor.
                     if (!await client.SendMessageAsync(responseMessage))
@@ -715,7 +725,6 @@ namespace ProximityServer.Network
 
       log.Trace("(-):{0}", res != null ? res.ToString() : "null");
       return res;
-
     }
 
 
@@ -1007,10 +1016,13 @@ namespace ProximityServer.Network
                   PrimaryActivity activity = (await unitOfWork.PrimaryActivityRepository.GetAsync(i => (i.ActivityId == ActivityId) && (i.OwnerIdentityId == OwnerIdentityId))).FirstOrDefault();
                   if (activity != null)
                   {
-                    ActivityInformation item = activity.ToActivityInformation();
-
-                    updateItem = new SharedActivityUpdateItem();
-                    updateItem.Add = item;
+                    updateItem = new SharedActivityUpdateItem()
+                    {
+                      Add = new SharedActivityAddItem()
+                      {
+                        SignedActivity = activity.ToSignedActivityInformation()
+                      }
+                    };
                   }
                   else
                   {
@@ -1033,27 +1045,32 @@ namespace ProximityServer.Network
                     // However, such a solution is complex and error prone. This seems to be by far the easiest way 
                     // to deal with this somewhat rare case.
                     //
-
-#warning TODO: If we implement data signing and verification, we have to make sure that Type "<INVALID>" is accepted without verification.
                     byte[] identityPublicKey = AdditionalData.FromHex();
-                    ActivityInformation item = new ActivityInformation()
+                    SharedActivityAddItem item = new SharedActivityAddItem()
                     {
-                      Version = SemVer.V100.ToByteString(),
-                      Id = ActivityId,
-                      OwnerPublicKey = ProtocolHelper.ByteArrayToByteString(identityPublicKey),
-                      ProfileServerContact = new ServerContactInfo()
+                      SignedActivity = new SignedActivityInformation()
                       {
-                        IpAddress = ProtocolHelper.ByteArrayToByteString(Config.Configuration.ExternalServerAddress.GetAddressBytes()),
-                        NetworkId = ProtocolHelper.ByteArrayToByteString(Crypto.Sha256(Config.Configuration.Keys.PublicKey)),
-                        PrimaryPort = 1
-                      },
-                      Type = ActivityBase.InternalInvalidActivityType,
-                      Latitude = 0,
-                      Longitude = 0,
-                      Precision = 0,
-                      StartTime = ProtocolHelper.DateTimeToUnixTimestampMs(DateTime.UtcNow),
-                      ExpirationTime = ProtocolHelper.DateTimeToUnixTimestampMs(DateTime.UtcNow.AddMinutes(1)),
-                      ExtraData = ""
+                        Activity = new ActivityInformation()
+                        {
+                          Version = SemVer.V100.ToByteString(),
+                          Id = ActivityId,
+                          OwnerPublicKey = ProtocolHelper.ByteArrayToByteString(identityPublicKey),
+                          ProfileServerContact = new ServerContactInfo()
+                          {
+                            IpAddress = ProtocolHelper.ByteArrayToByteString(Config.Configuration.ExternalServerAddress.GetAddressBytes()),
+                            NetworkId = ProtocolHelper.ByteArrayToByteString(Crypto.Sha256(Config.Configuration.Keys.PublicKey)),
+                            PrimaryPort = 1
+                          },
+                          Type = ActivityBase.InternalInvalidActivityType,
+                          Latitude = 0,
+                          Longitude = 0,
+                          Precision = 0,
+                          StartTime = ProtocolHelper.DateTimeToUnixTimestampMs(DateTime.UtcNow),
+                          ExpirationTime = ProtocolHelper.DateTimeToUnixTimestampMs(DateTime.UtcNow.AddMinutes(1)),
+                          ExtraData = ""
+                        },
+                        Signature = ProtocolHelper.ByteArrayToByteString(new byte[0])
+                      }
                     };
 
                     updateItem = new SharedActivityUpdateItem();
@@ -1069,10 +1086,13 @@ namespace ProximityServer.Network
                   PrimaryActivity activity = (await unitOfWork.PrimaryActivityRepository.GetAsync(i => (i.ActivityId == ActivityId) && (i.OwnerIdentityId == OwnerIdentityId))).FirstOrDefault();
                   if (activity != null)
                   {
-                    ActivityInformation item = activity.ToActivityInformation();
-
-                    updateItem = new SharedActivityUpdateItem();
-                    updateItem.Change = item;
+                    updateItem = new SharedActivityUpdateItem()
+                    {
+                      Change = new SharedActivityChangeItem()
+                      {
+                        SignedActivity = activity.ToSignedActivityInformation()
+                      }
+                    };
                   }
                   else
                   {
@@ -1094,26 +1114,45 @@ namespace ProximityServer.Network
                   // Because of using the artifical activity trick, we can be sure here that the follower is aware of 
                   // this activity even if it was deleted from our database before add activity update action 
                   // was taken from the queue. See the analysis in AddActivity case for more information.
-                  ActivityFullId item = new ActivityFullId()
+                  updateItem = new SharedActivityUpdateItem()
                   {
-                    Id = ActivityId,
-                    OwnerNetworkId = ProtocolHelper.ByteArrayToByteString(OwnerIdentityId)
+                    Delete = new SharedActivityDeleteItem()
+                    {
+                      Id = ActivityId,
+                      OwnerNetworkId = ProtocolHelper.ByteArrayToByteString(OwnerIdentityId)
+                    }
                   };
+                  break;
+                }
 
-                  updateItem = new SharedActivityUpdateItem();
-                  updateItem.Delete = item;
+
+              case NeighborhoodActionType.RefreshNeighborStatus:
+                {
+                  updateItem = new SharedActivityUpdateItem()
+                  {
+                    Refresh = new SharedActivityRefreshItem()
+                  };
                   break;
                 }
 
 
               default:
                 log.Error("Invalid action type '{0}'.", ActionType);
+
+                // Should never happen. Same resolution as in case of exception below.
                 break;
             }
           }
           catch (Exception e)
           {
             log.Error("Exception occurred: {0}", e.ToString());
+            //
+            // We should never be here, there probably is a bug and this action will probably cause 
+            // this bug again if we don't remove it. However, removing the action is even worse because 
+            // it would cause silent inconsistency of the follower's database, which may even be occasionally 
+            // fixed by future updates, but we would rather want to know about bugs of this severity,
+            // so we leave the action in the queue and hopefully someone will notice sooner or later.
+            //
           }
         }
 
@@ -1291,11 +1330,11 @@ namespace ProximityServer.Network
       {
         if (updateItem.ActionTypeCase == SharedActivityUpdateItem.ActionTypeOneofCase.Add)
         {
-          ActivityInformation addItem = updateItem.Add;
+          SharedActivityAddItem addItem = updateItem.Add;
           ProxProtocolMessage errorResponse;
           if (InputValidators.ValidateInMemorySharedActivityActivityInformation(addItem, itemIndex, activityDatabase, Client.MessageBuilder, RequestMessage, out errorResponse))
           {
-            NeighborActivity activity = ActivityBase.FromActivityInformation<NeighborActivity>(addItem, Client.ServerId);
+            NeighborActivity activity = ActivityBase.FromSignedActivityInformation<NeighborActivity>(addItem.SignedActivity, Client.ServerId);
             activityDatabase.Add(activity.GetFullId(), activity);
           }
           else

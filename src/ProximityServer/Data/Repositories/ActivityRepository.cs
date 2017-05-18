@@ -38,7 +38,6 @@ namespace ProximityServer.Data.Repositories
     /// </summary>
     /// <param name="ResultOffset">Zero-based index of the first result to retrieve.</param>
     /// <param name="MaxResults">Maximum number of results to retrieve.</param>
-    /// <param name="ActivityIdFilter">Activity ID or 0 if activity ID is not known. If non-zero, <paramref name="OwnerIdFilter"/> must not be null.</param>
     /// <param name="OwnerIdFilter">Network identifier of the identity that created matching activities, or null if filtering by the owner is not required.</param>
     /// <param name="TypeFilter">Wildcard filter for activity type, or empty string if activity type filtering is not required.</param>
     /// <param name="StartNotAfterFilter">Maximal start time of activity, or null if start time filtering is not required.</param>
@@ -49,10 +48,10 @@ namespace ProximityServer.Data.Repositories
     /// <remarks>On this level we query the database with an unprecise set of filters. The location filter uses GPS square instead of cirle target area 
     /// and there is no extraData filter. This means the output of this function is a superset of what we are looking for and the caller is responsible 
     /// to filter the output to get the exact set.</remarks>
-    public async Task<List<T>> ActivitySearchAsync(uint ResultOffset, uint MaxResults, uint ActivityIdFilter, byte[] OwnerIdFilter, string TypeFilter, DateTime? StartNotAfterFilter, DateTime? ExpirationNotBeforeFilter, GpsLocation LocationFilter, uint RadiusFilter)
+    public async Task<List<T>> ActivitySearchAsync(uint ResultOffset, uint MaxResults, byte[] OwnerIdFilter, string TypeFilter, DateTime? StartNotAfterFilter, DateTime? ExpirationNotBeforeFilter, GpsLocation LocationFilter, uint RadiusFilter)
     {
-      log.Trace("(ResultOffset:{0},MaxResults:{1},ActivityIdFilter:{2},OwnerIdFilter:'{3}',TypeFilter:'{4}',StartNotAfterFilter:{5},ExpirationNotBeforeFilter:{6},LocationFilter:[{7}],RadiusFilter:{8})",
-        ResultOffset, MaxResults, ActivityIdFilter, OwnerIdFilter != null ? OwnerIdFilter.ToHex() : "", TypeFilter, StartNotAfterFilter != null ? StartNotAfterFilter.Value.ToString("yyyy-MM-dd HH:mm:ss") : "null",
+      log.Trace("(ResultOffset:{0},MaxResults:{1},OwnerIdFilter:'{2}',TypeFilter:'{3}',StartNotAfterFilter:{4},ExpirationNotBeforeFilter:{5},LocationFilter:[{6}],RadiusFilter:{7})",
+        ResultOffset, MaxResults, OwnerIdFilter != null ? OwnerIdFilter.ToHex() : "", TypeFilter, StartNotAfterFilter != null ? StartNotAfterFilter.Value.ToString("yyyy-MM-dd HH:mm:ss") : "null",
         ExpirationNotBeforeFilter != null ? ExpirationNotBeforeFilter.Value.ToString("yyyy-MM-dd HH:mm:ss") : "null", LocationFilter, RadiusFilter);
 
       // First we obtain result candidates from the database. These candidates may later be filtered out by more precise use of location filter 
@@ -62,9 +61,6 @@ namespace ProximityServer.Data.Repositories
 
       // This is to exclude special internal activity type.
       IQueryable<T> query = dbSet.Where(a => a.Type != ActivityBase.InternalInvalidActivityType);
-
-      // Apply activity ID filter if any.
-      if (ActivityIdFilter != 0) query = query.Where(a => a.ActivityId == ActivityIdFilter);
 
       // Apply owner identity ID filter if any.
       if (OwnerIdFilter != null) query = query.Where(a => a.OwnerIdentityId == OwnerIdFilter);
@@ -281,6 +277,45 @@ namespace ProximityServer.Data.Repositories
 
       log.Trace("(-)");
       return res;
+    }
+
+
+    /// <summary>
+    /// Finds and deletes expired activities.
+    /// </summary>
+    public async Task DeleteExpiredActivitiesAsync()
+    {
+      log.Trace("()");
+
+      bool isPrimaryRepository = this is PrimaryActivityRepository;
+      DateTime now = DateTime.UtcNow;
+
+      DatabaseLock lockObject = isPrimaryRepository ? UnitOfWork.PrimaryActivityLock : UnitOfWork.NeighborActivityLock;
+      await unitOfWork.AcquireLockAsync(lockObject);
+      try
+      {
+        List<T> expiredActivities = (await GetAsync(i => i.ExpirationTime < now, null, true)).ToList();
+        if (expiredActivities.Count > 0)
+        {
+          log.Debug("There are {0} expired primary activities.", expiredActivities.Count);
+          foreach (T activity in expiredActivities)
+          {
+            Delete(activity);
+            log.Debug("{0} activity ID {1}, owner ID '{2}' expired and will be deleted.", isPrimaryRepository ? "Primary" : "Neighbor", activity.ActivityId, activity.OwnerIdentityId.ToHex());
+          }
+
+          await unitOfWork.SaveThrowAsync();
+          log.Debug("{0} expired {1} activities were deleted.", expiredActivities.Count, isPrimaryRepository ? "primary" : "neighbor");
+        }
+        else log.Debug("No expired activities found.");
+      }
+      catch (Exception e)
+      {
+        log.Error("Exception occurred: {0}", e.ToString());
+      }
+
+      unitOfWork.ReleaseLock(lockObject);
+      log.Trace("(-)");
     }
   }
 }

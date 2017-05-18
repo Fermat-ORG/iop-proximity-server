@@ -48,6 +48,11 @@ namespace ProximityServer.Data.Models
     RemoveActivity = 12,
 
     /// <summary>
+    /// The proximity server wants to refresh its neighbor status on the follower server in order to prevent its expiration.
+    /// </summary>
+    RefreshNeighborStatus = 13,
+
+    /// <summary>
     /// Purpose of this action is to prevent other activity actions to be sent as updates to followers 
     /// before the neighborhood initialization process is finished.
     /// </summary>

@@ -26,18 +26,22 @@ namespace ProximityServer.Network
     /// anything that depends on the context. 
     /// </summary>
     /// <param name="Activity">Description of the activity to validate.</param>
+    /// <param name="OwnerIdentityPublicKey">Public key of the activity's owner identity.</param>
     /// <param name="MessageBuilder">Network message builder of the client who sent this activity description.</param>
     /// <param name="RequestMessage">Full request message from client.</param>
     /// <param name="ErrorPrefix">Prefix to add to the validation error details.</param>
     /// <param name="ErrorResponse">If the function fails, this is filled with error response message that is ready to be sent to the client.</param>
     /// <returns>true if the activity information is valid, false otherwise.</returns>
-    public static bool ValidateActivityInformation(ActivityInformation Activity, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, string ErrorPrefix, out ProxProtocolMessage ErrorResponse)
+    public static bool ValidateActivityInformation(ActivityInformation Activity, byte[] OwnerIdentityPublicKey, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, string ErrorPrefix, out ProxProtocolMessage ErrorResponse)
     {
       log.Trace("()");
 
       bool res = false;
       ErrorResponse = null;
       string details = null;
+
+      if (Activity == null) Activity = new ActivityInformation();
+      if (Activity.ProfileServerContact == null) Activity.ProfileServerContact = new ServerContactInfo();
 
       SemVer version = new SemVer(Activity.Version);
 
@@ -63,10 +67,11 @@ namespace ProximityServer.Network
 
       if (details == null)
       {
-        bool pubKeyValid = (0 < Activity.OwnerPublicKey.Length) && (Activity.OwnerPublicKey.Length <= ProtocolHelper.MaxPublicKeyLengthBytes);
+        byte[] pubKey = Activity.OwnerPublicKey.ToByteArray();
+        bool pubKeyValid = (0 < pubKey.Length) && (pubKey.Length <= ProtocolHelper.MaxPublicKeyLengthBytes) && ByteArrayComparer.Equals(OwnerIdentityPublicKey, pubKey);
         if (!pubKeyValid)
         {
-          log.Debug("Invalid public key length {0}.", Activity.OwnerPublicKey.Length);
+          log.Debug("Invalid public key '{0}' does not match identity public key '{1}'.", pubKey.ToHex(), OwnerIdentityPublicKey.ToHex());
           details = "ownerPublicKey";
         }
       }
@@ -96,9 +101,10 @@ namespace ProximityServer.Network
         if (activityType == null) activityType = "";
 
         int byteLen = Encoding.UTF8.GetByteCount(activityType);
-        if (byteLen > ActivityBase.MaxActivityTypeLengthBytes)
+        bool activityTypeValid = (0 < byteLen) && (byteLen <= ActivityBase.MaxActivityTypeLengthBytes);
+        if (!activityTypeValid)
         {
-          log.Debug("Activity type too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityTypeLengthBytes);
+          log.Debug("Activity type too long or zero length ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityTypeLengthBytes);
           details = "type";
         }
       }
@@ -184,6 +190,48 @@ namespace ProximityServer.Network
     }
 
 
+    /// <summary>
+    /// Checks whether a signed activity information is valid.
+    /// </summary>
+    /// <param name="SignedActivity">Signed activity information to check.</param>
+    /// <param name="OwnerIdentityPublicKey">Public key of the activity's owner identity.</param>
+    /// <param name="MessageBuilder">Client's network message builder.</param>
+    /// <param name="RequestMessage">Full request message from client.</param>
+    /// <param name="ErrorPrefix">Prefix to add to the validation error details.</param>
+    /// <param name="InvalidSignatureToDetails">If set to true, invalid signature error will be reported as invalid value in signature field.</param>
+    /// <param name="ErrorResponse">If the function fails, this is filled with error response message that is ready to be sent to the client.</param>
+    /// <returns>true if the signed activity information is valid and signed correctly by the given identity, false otherwise.</returns>
+    public static bool ValidateSignedActivityInformation(SignedActivityInformation SignedActivity, byte[] OwnerIdentityPublicKey, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, string ErrorPrefix, bool InvalidSignatureToDetails, out ProxProtocolMessage ErrorResponse)
+    {
+      log.Trace("()");
+      ErrorResponse = null;
+
+      if (SignedActivity == null) SignedActivity = new SignedActivityInformation();
+      if (SignedActivity.Activity == null) SignedActivity.Activity = new ActivityInformation();
+
+      bool res = false;
+      if (ValidateActivityInformation(SignedActivity.Activity, OwnerIdentityPublicKey, MessageBuilder, RequestMessage, ErrorPrefix + "activity.", out ErrorResponse))
+      {
+        // ActivityBase.InternalInvalidActivityType is a special internal type of activity that we use to prevent problems in the network.
+        // This is not an elegant solution.
+        // See NeighborhoodActionProcessor.NeighborhoodActivityUpdateAsync case NeighborhoodActionType.AddActivity for more information.
+        if (SignedActivity.Activity.Type != ActivityBase.InternalInvalidActivityType)
+        {
+          byte[] signature = SignedActivity.Signature.ToByteArray();
+          byte[] data = SignedActivity.Activity.ToByteArray();
+
+          if (Ed25519.Verify(signature, data, OwnerIdentityPublicKey)) res = true;
+          else ErrorResponse = InvalidSignatureToDetails ? MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, ErrorPrefix + "signature") : MessageBuilder.CreateErrorInvalidSignatureResponse(RequestMessage);
+        }
+      }
+
+      log.Trace("(-):{0}", res);
+      return res;
+    }
+
+
+
+
 
     /// <summary>
     /// Checks whether the create activity request is valid.
@@ -203,8 +251,18 @@ namespace ProximityServer.Network
       ErrorResponse = null;
       string details = null;
 
-      ProxMessageBuilder messageBuilder = Client.MessageBuilder;
-      if (ValidateActivityInformation(CreateActivityRequest.Activity, messageBuilder, RequestMessage, "activity.", out ErrorResponse))
+      if (CreateActivityRequest == null) CreateActivityRequest = new CreateActivityRequest();
+      if (CreateActivityRequest.Activity == null) CreateActivityRequest.Activity = new ActivityInformation();
+      if (CreateActivityRequest.Activity.ProfileServerContact == null) CreateActivityRequest.Activity.ProfileServerContact = new ServerContactInfo();
+
+      SignedActivityInformation signedActivity = new SignedActivityInformation()
+      {
+        Activity = CreateActivityRequest.Activity,
+        Signature = RequestMessage.Request.ConversationRequest.Signature
+      };
+
+
+      if (ValidateSignedActivityInformation(signedActivity, Client.PublicKey, Client.MessageBuilder, RequestMessage, "", false, out ErrorResponse))
       {
         byte[] ownerPubKey = CreateActivityRequest.Activity.OwnerPublicKey.ToByteArray();
 
@@ -232,7 +290,7 @@ namespace ProximityServer.Network
         }
 
         if (details == null) res = true;
-        else ErrorResponse = messageBuilder.CreateErrorInvalidValueResponse(RequestMessage, details);
+        else ErrorResponse = Client.MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, details);
       }
 
       log.Trace("(-):{0}", res);
@@ -260,18 +318,18 @@ namespace ProximityServer.Network
       ErrorResponse = null;
       string details = null;
 
-      ProxMessageBuilder messageBuilder = Client.MessageBuilder;
-      if (ValidateActivityInformation(UpdateActivityRequest.Activity, messageBuilder, RequestMessage, "activity.", out ErrorResponse))
+      if (UpdateActivityRequest == null) UpdateActivityRequest = new UpdateActivityRequest();
+      if (UpdateActivityRequest.Activity == null) UpdateActivityRequest.Activity = new ActivityInformation();
+
+      SignedActivityInformation signedActivity = new SignedActivityInformation()
       {
-        byte[] ownerPubKey = UpdateActivityRequest.Activity.OwnerPublicKey.ToByteArray();
+        Activity = UpdateActivityRequest.Activity,
+        Signature = RequestMessage.Request.ConversationRequest.Signature
+      };
 
-        if (!ByteArrayComparer.Equals(Client.PublicKey, ownerPubKey))
-        {
-          log.Debug("Client's public key '{0}' does not match activity owner's public key '{1}'.", Client.PublicKey.ToHex(), ownerPubKey.ToHex());
-          details = "activity.ownerPublicKey";
-        }
-
-
+      ProxMessageBuilder messageBuilder = Client.MessageBuilder;
+      if (ValidateSignedActivityInformation(signedActivity, Client.PublicKey, messageBuilder, RequestMessage, "", false, out ErrorResponse))
+      {
         if (details == null)
         {
           int index = 0;
@@ -291,7 +349,6 @@ namespace ProximityServer.Network
         if (details == null) res = true;
         else ErrorResponse = messageBuilder.CreateErrorInvalidValueResponse(RequestMessage, details);
       }
-
 
       log.Trace("(-):{0}", res);
       return res;
@@ -336,18 +393,7 @@ namespace ProximityServer.Network
         }
       }
 
-      if ((details == null) && ((ActivitySearchRequest.OwnerNetworkId == null) || (ActivitySearchRequest.OwnerNetworkId.Length == 0)))
-      {
-        // If ActivitySearchRequest.Id is not zero, ActivitySearchRequest.OwnerNetworkId must not be empty.
-        bool ownerNetworkIdValid = ActivitySearchRequest.Id == 0;
-        if (!ownerNetworkIdValid)
-        {
-          log.Debug("Owner network ID is not used but activity ID is non-zero.");
-          details = "ownerNetworkId";
-        }
-      }
-
-      if ((details == null) && (ActivitySearchRequest.OwnerNetworkId != null) && (ActivitySearchRequest.OwnerNetworkId.Length > 0))
+      if ((details == null) && (ActivitySearchRequest.OwnerNetworkId.Length > 0))
       {
         bool ownerNetworkIdValid = ActivitySearchRequest.OwnerNetworkId.Length == ProtocolHelper.NetworkIdentifierLength;
         if (!ownerNetworkIdValid)
@@ -485,6 +531,10 @@ namespace ProximityServer.Network
           res = ValidateSharedActivityDeleteItem(UpdateItem.Delete, Index, UsedFullActivityIdsInBatch, MessageBuilder, RequestMessage, out ErrorResponse);
           break;
 
+        case SharedActivityUpdateItem.ActionTypeOneofCase.Refresh:
+          res = true;
+          break;
+
         default:
           ErrorResponse = MessageBuilder.CreateErrorProtocolViolationResponse(RequestMessage);
           res = false;
@@ -510,14 +560,20 @@ namespace ProximityServer.Network
     /// <param name="RequestMessage">Full request message received by the client.</param>
     /// <param name="ErrorResponse">If the validation fails, this is filled with response message to be sent to the neighbor.</param>
     /// <returns>true if the validation is successful, false otherwise.</returns>
-    public static bool ValidateSharedActivityAddItem(ActivityInformation AddItem, int Index, int SharedActivitiesCount, HashSet<string> UsedFullActivityIdsInBatch, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
+    public static bool ValidateSharedActivityAddItem(SharedActivityAddItem AddItem, int Index, int SharedActivitiesCount, HashSet<string> UsedFullActivityIdsInBatch, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
     {
       log.Trace("(Index:{0},SharedActivitiesCount:{1})", Index, SharedActivitiesCount);
 
       bool res = false;
       ErrorResponse = null;
 
-      if (ValidateActivityInformation(AddItem, MessageBuilder, RequestMessage, Index.ToString() + "add.", out ErrorResponse))
+      if (AddItem == null) AddItem = new SharedActivityAddItem();
+      if (AddItem.SignedActivity == null) AddItem.SignedActivity = new SignedActivityInformation();
+      if (AddItem.SignedActivity.Activity == null) AddItem.SignedActivity.Activity = new ActivityInformation();
+
+
+      byte[] ownerIdentityPubKey = AddItem.SignedActivity.Activity.OwnerPublicKey.ToByteArray();
+      if (ValidateSignedActivityInformation(AddItem.SignedActivity, ownerIdentityPubKey, MessageBuilder, RequestMessage, Index.ToString() + ".add.signedActivity.", true, out ErrorResponse))
       {
         string details = null;
 
@@ -529,11 +585,10 @@ namespace ProximityServer.Network
 
         if (details == null)
         {
-          byte[] pubKey = AddItem.OwnerPublicKey.ToByteArray();
-          byte[] identityId = Crypto.Sha256(pubKey);
+          byte[] identityId = Crypto.Sha256(ownerIdentityPubKey);
           NeighborActivity na = new NeighborActivity()
           {
-            ActivityId = AddItem.Id,
+            ActivityId = AddItem.SignedActivity.Activity.Id,
             OwnerIdentityId = identityId
           };
 
@@ -544,8 +599,8 @@ namespace ProximityServer.Network
           }
           else
           {
-            log.Debug("Activity full ID '{0}' (public key '{1}') already processed in this request.", activityFullId, pubKey.ToHex());
-            details = "add.id";
+            log.Debug("Activity full ID '{0}' (public key '{1}') already processed in this request.", activityFullId, ownerIdentityPubKey.ToHex());
+            details = "add.signedActivity.activity.id";
           }
         }
 
@@ -570,23 +625,28 @@ namespace ProximityServer.Network
     /// <param name="RequestMessage">Full request message received by the client.</param>
     /// <param name="ErrorResponse">If the validation fails, this is filled with response message to be sent to the neighbor.</param>
     /// <returns>true if the validation is successful, false otherwise.</returns>
-    public static bool ValidateSharedActivityChangeItem(ActivityInformation ChangeItem, int Index, HashSet<string> UsedFullActivityIdsInBatch, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
+    public static bool ValidateSharedActivityChangeItem(SharedActivityChangeItem ChangeItem, int Index, HashSet<string> UsedFullActivityIdsInBatch, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
     {
       log.Trace("(Index:{0})", Index);
 
       bool res = false;
       ErrorResponse = null;
 
-      if (ValidateActivityInformation(ChangeItem, MessageBuilder, RequestMessage, Index.ToString() + "change.", out ErrorResponse))
+      if (ChangeItem == null) ChangeItem = new SharedActivityChangeItem();
+      if (ChangeItem.SignedActivity == null) ChangeItem.SignedActivity = new SignedActivityInformation();
+      if (ChangeItem.SignedActivity.Activity == null) ChangeItem.SignedActivity.Activity = new ActivityInformation();
+
+
+      byte[] ownerIdentityPubKey = ChangeItem.SignedActivity.Activity.OwnerPublicKey.ToByteArray();
+      if (ValidateSignedActivityInformation(ChangeItem.SignedActivity, ownerIdentityPubKey, MessageBuilder, RequestMessage, Index.ToString() + ".change.signedActivity.", true, out ErrorResponse))
       {
         string details = null;
 
-        byte[] pubKey = ChangeItem.OwnerPublicKey.ToByteArray();
-        byte[] identityId = Crypto.Sha256(pubKey);
+        byte[] identityId = Crypto.Sha256(ownerIdentityPubKey);
 
         NeighborActivity na = new NeighborActivity()
         {
-          ActivityId = ChangeItem.Id,
+          ActivityId = ChangeItem.SignedActivity.Activity.Id,
           OwnerIdentityId = identityId
         };
 
@@ -598,7 +658,7 @@ namespace ProximityServer.Network
         else
         {
           log.Debug("Activity full ID '{0}' already processed in this request.", activityFullId);
-          details = "change.id";
+          details = "change.signedActivity.activity.id";
         }
 
         if (details == null) res = true;
@@ -623,12 +683,14 @@ namespace ProximityServer.Network
     /// <param name="RequestMessage">Full request message received by the client.</param>
     /// <param name="ErrorResponse">If the validation fails, this is filled with response message to be sent to the neighbor.</param>
     /// <returns>true if the validation is successful, false otherwise.</returns>
-    public static bool ValidateSharedActivityDeleteItem(ActivityFullId DeleteItem, int Index, HashSet<string> UsedFullActivityIdsInBatch, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
+    public static bool ValidateSharedActivityDeleteItem(SharedActivityDeleteItem DeleteItem, int Index, HashSet<string> UsedFullActivityIdsInBatch, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
     {
       log.Trace("(Index:{0})", Index);
 
       bool res = false;
       ErrorResponse = null;
+
+      if (DeleteItem == null) DeleteItem = new SharedActivityDeleteItem();
 
       string details = null;
 
@@ -690,14 +752,19 @@ namespace ProximityServer.Network
     /// <param name="RequestMessage">Full request message received by the client.</param>
     /// <param name="ErrorResponse">If the validation fails, this is filled with response message to be sent to the neighbor.</param>
     /// <returns>true if the validation is successful, false otherwise.</returns>
-    public static bool ValidateInMemorySharedActivityActivityInformation(ActivityInformation AddItem, int Index, Dictionary<string, NeighborActivity> ActivityDatabase, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
+    public static bool ValidateInMemorySharedActivityActivityInformation(SharedActivityAddItem AddItem, int Index, Dictionary<string, NeighborActivity> ActivityDatabase, ProxMessageBuilder MessageBuilder, ProxProtocolMessage RequestMessage, out ProxProtocolMessage ErrorResponse)
     {
       log.Trace("(Index:{0})", Index);
 
       bool res = false;
       ErrorResponse = null;
 
-      if (ValidateActivityInformation(AddItem, MessageBuilder, RequestMessage, Index.ToString() + "add.", out ErrorResponse))
+      if (AddItem == null) AddItem = new SharedActivityAddItem();
+      if (AddItem.SignedActivity == null) AddItem.SignedActivity = new SignedActivityInformation();
+      if (AddItem.SignedActivity.Activity == null) AddItem.SignedActivity.Activity = new ActivityInformation();
+
+      byte[] ownerIdentityPubKey = AddItem.SignedActivity.Activity.OwnerPublicKey.ToByteArray();
+      if (ValidateSignedActivityInformation(AddItem.SignedActivity, ownerIdentityPubKey, MessageBuilder, RequestMessage, Index.ToString() + ".add.signedActivity.", true, out ErrorResponse))
       {
         string details = null;
         if (ActivityDatabase.Count >= ActivityBase.MaxPrimaryActivities)
@@ -708,19 +775,18 @@ namespace ProximityServer.Network
 
         if (details == null)
         {
-          byte[] pubKey = AddItem.OwnerPublicKey.ToByteArray();
-          byte[] identityId = Crypto.Sha256(pubKey);
+          byte[] identityId = Crypto.Sha256(ownerIdentityPubKey);
           NeighborActivity na = new NeighborActivity()
           {
-            ActivityId = AddItem.Id,
+            ActivityId = AddItem.SignedActivity.Activity.Id,
             OwnerIdentityId = identityId
           };
 
           string activityFullId = na.GetFullId();
           if (ActivityDatabase.ContainsKey(activityFullId))
           {
-            log.Debug("Activity full ID '{0}' (public key '{1}') already exists.", activityFullId, pubKey.ToHex());
-            details = "add.id";
+            log.Debug("Activity full ID '{0}' (public key '{1}') already exists.", activityFullId, ownerIdentityPubKey.ToHex());
+            details = "add.signedActivity.activity.id";
           }
         }
 
