@@ -14,13 +14,13 @@ using IopServerCore.Data;
 namespace ProximityServer.Data.Repositories
 {
   /// <summary>
-  /// Generic repository for activities, which is the base for PrimaryActivityReposity for primary identities of this proximity server
+  /// Generic repository for activities, which is the base class for PrimaryActivityReposity for primary identities of this proximity server
   /// and NeighborActivityRepository for identities managed by this proximity server's neighbors.
   /// </summary>
-  public class ActivityRepository<T> : GenericRepository<T> where T : ActivityBase
+  public abstract class ActivityRepositoryBase<T> : GenericRepository<T> where T : ActivityBase
   {
     /// <summary>Class logger.</summary>
-    private static Logger log = new Logger("ProximityServer.Data.Repositories.ActivityRepository");
+    private static Logger log = new Logger("ProximityServer.Data.Repositories.ActivityRepositoryBase");
 
 
     /// <summary>
@@ -28,7 +28,7 @@ namespace ProximityServer.Data.Repositories
     /// </summary>
     /// <param name="Context">Database context.</param>
     /// <param name="UnitOfWork">Instance of unit of work that owns the repository.</param>
-    public ActivityRepository(Context Context, UnitOfWork UnitOfWork)
+    public ActivityRepositoryBase(Context Context, UnitOfWork UnitOfWork)
       : base(Context, UnitOfWork)
     {
     }

@@ -12,7 +12,6 @@ using Iop.Proximityserver;
 
 namespace ProximityServer.Data.Models
 {
-#warning TODO: create an abstract base class for neighbors and followers and unite the common functionality 
   /// <summary>
   /// Database representation of a proximity server neighbor. A neighbor is another proximity server within the proximity server's 
   /// neighborhood, which was announced to the proximity server by its LOC server. There are two directions of a neighborhood relationship,
@@ -23,7 +22,7 @@ namespace ProximityServer.Data.Models
   /// The opposite direction relation is represented by <see cref="Follower"/> class.
   /// </para>
   /// </summary>
-  public class Neighbor
+  public class Neighbor : RemoteServerBase
   {
     /// <summary>Class logger.</summary>
     private static Logger log = new Logger("ProximityServer.Data.Models.Neighbor");
@@ -33,32 +32,6 @@ namespace ProximityServer.Data.Models
 
     /// <summary>Minimal allowed value for the limit of the size of the proximity server's neighborhood.</summary>
     public const int MinMaxNeighborhoodSize = 105;
-
-    /// <summary>Unique primary key for the database.</summary>
-    /// <remarks>This is primary key - see ProximityServer.Data.Context.OnModelCreating.</remarks>
-    [Required]
-    public int DbId { get; set; }
-
-    /// <summary>Network identifier of the proximity server is SHA256 hash of identity's public key.</summary>
-    /// <remarks>This is index - see ProximityServer.Data.Context.OnModelCreating.</remarks>
-    [Required]
-    [MaxLength(ProtocolHelper.NetworkIdentifierLength)]
-    public byte[] NeighborId { get; set; }
-
-    /// <summary>IP address of the proximity server.</summary>
-    /// <remarks>This is index - see ProximityServer.Data.Context.OnModelCreating.</remarks>
-    [Required]
-    public string IpAddress { get; set; }
-
-    /// <summary>TCP port of the proximity server's primary interface.</summary>
-    /// <remarks>This is index - see ProximityServer.Data.Context.OnModelCreating.</remarks>
-    [Required]
-    [Range(1, 65535)]
-    public int PrimaryPort { get; set; }
-
-    /// <summary>TCP port of the proximity server's neighbors interface.</summary>
-    [Range(1, 65535)]
-    public int? NeighborPort { get; set; }
 
     /// <summary>Proximity server's GPS location latitude.</summary>
     /// <remarks>For precision definition see ProximityServer.Data.Context.OnModelCreating.</remarks>
@@ -72,43 +45,7 @@ namespace ProximityServer.Data.Models
     [Range(-180, 180)]
     public decimal LocationLongitude { get; set; }
 
-#warning TODO: add specific boolean value for finished initialization and leave LastRefreshTime just to be the refresh time
-    /// <summary>
-    /// Time of the last refresh message received from the neighbor.
-    /// <para>
-    /// A null value means that the proximity server did not finish the initialization process with the neighbor.
-    /// Once the initialization process is completed this field is initialized.
-    /// </para>
-    /// </summary>
-    /// <remarks>This is index - see ProximityServer.Data.Context.OnModelCreating.</remarks>
-    public DateTime? LastRefreshTime { get; set; }
-
     /// <summary>Number of shared activities that the proximity server received from this neighbor.</summary>
     public int SharedActivities { get; set; }
-
-
-    /// <summary>
-    /// Constructs ServerContactInfo representation of the neighbor's contact information.
-    /// </summary>
-    /// <returns>ServerContactInfo structure or null if the function fails.</returns>
-    public ServerContactInfo GetServerContactInfo()
-    {
-      log.Trace("()");
-
-      ServerContactInfo res = null;
-      ServerContactInfo sci = new ServerContactInfo();
-      sci.NetworkId = ProtocolHelper.ByteArrayToByteString(this.NeighborId);
-      sci.PrimaryPort = (uint)this.PrimaryPort;
-      IPAddress ipAddr = null;
-      if (IPAddress.TryParse(this.IpAddress, out ipAddr))
-      {
-        sci.IpAddress = ProtocolHelper.ByteArrayToByteString(ipAddr.GetAddressBytes());
-        res = sci;
-      }
-      else log.Error("Neighbor ID '{0}' has invalid IP address '{1}'.", this.NeighborId.ToHex(), this.IpAddress);
-
-      log.Trace("(-):{0}", res != null ? "ServerContactInfo" : "null");
-      return res;
-    }
   }
 }

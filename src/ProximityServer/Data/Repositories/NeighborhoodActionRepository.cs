@@ -56,7 +56,7 @@ namespace ProximityServer.Data.Repositories
         {
           NeighborhoodAction neighborhoodAction = new NeighborhoodAction()
           {
-            ServerId = follower.FollowerId,
+            ServerId = follower.NetworkId,
             ExecuteAfter = null,
             TargetActivityId = ActivityId,
             TargetActivityOwnerId = OwnerIdentityId,
@@ -67,7 +67,7 @@ namespace ProximityServer.Data.Repositories
           await InsertAsync(neighborhoodAction);
 
           res = true;
-          log.Trace("Activity action with activity ID {0}, owner identity ID '{1}' added for follower ID '{2}'.", ActivityId, OwnerIdentityId.ToHex(), follower.FollowerId.ToHex());
+          log.Trace("Activity action with activity ID {0}, owner identity ID '{1}' added for follower ID '{2}'.", ActivityId, OwnerIdentityId.ToHex(), follower.NetworkId.ToHex());
         }
       }
       else log.Trace("No followers found to propagate identity profile change to.");

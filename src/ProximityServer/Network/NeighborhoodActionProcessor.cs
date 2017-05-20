@@ -398,6 +398,7 @@ namespace ProximityServer.Network
       return res;
     }
 
+
     /// <summary>
     /// Executes a neighborhood action.
     /// </summary>
@@ -678,49 +679,7 @@ namespace ProximityServer.Network
       IPEndPoint res = null;
       using (UnitOfWork unitOfWork = new UnitOfWork())
       {
-        DatabaseLock lockObject = null;
-        bool unlock = false;
-        try
-        {
-          Neighbor neighbor = (await unitOfWork.NeighborRepository.GetAsync(n => n.NeighborId == NeighborId)).FirstOrDefault();
-          if (neighbor != null)
-          {
-            IPAddress addr = IPAddress.Parse(neighbor.IpAddress);
-            if (!IgnoreDbPortValue && (neighbor.NeighborPort != null))
-            {
-              res = new IPEndPoint(addr, neighbor.NeighborPort.Value);
-            }
-            else
-            {
-              // We do not know neighbor port of this neighbor yet (or we ignore it), we have to connect to its primary port and get that information.
-              int neighborPort = await GetServerRolePortFromPrimaryPort(addr, neighbor.PrimaryPort, ServerRoleType.Neighbor);
-              if (neighborPort != 0)
-              {
-                lockObject = UnitOfWork.NeighborLock;
-                await unitOfWork.AcquireLockAsync(lockObject);
-                unlock = true;
-
-                neighbor.NeighborPort = neighborPort;
-                if (!await unitOfWork.SaveAsync())
-                  log.Error("Unable to save new neighbor port information {0} of neighbor ID '{1}' to the database.", neighborPort, NeighborId.ToHex());
-
-                res = new IPEndPoint(addr, neighborPort);
-              }
-              else log.Debug("Unable to obtain neighbor port from primary port of neighbor ID '{0}'.", NeighborId.ToHex());
-            }
-          }
-          else
-          {
-            log.Error("Unable to find neighbor ID '{0}' in the database.", NeighborId.ToHex());
-            NotFound.Value = true;
-          }
-        }
-        catch (Exception e)
-        {
-          log.Error("Exception occurred: {0}", e.ToString());
-        }
-
-        if (unlock) unitOfWork.ReleaseLock(lockObject);
+        res = await unitOfWork.NeighborRepository.GetServerContactAsync(NeighborId, NotFound, IgnoreDbPortValue);
       }
 
       log.Trace("(-):{0}", res != null ? res.ToString() : "null");
@@ -743,49 +702,7 @@ namespace ProximityServer.Network
       IPEndPoint res = null;
       using (UnitOfWork unitOfWork = new UnitOfWork())
       {
-        DatabaseLock lockObject = null;
-        bool unlock = false;
-        try
-        {
-          Follower follower = (await unitOfWork.FollowerRepository.GetAsync(f => f.FollowerId == FollowerId)).FirstOrDefault();
-          if (follower != null)
-          {
-            IPAddress addr = IPAddress.Parse(follower.IpAddress);
-            if (!IgnoreDbPortValue && (follower.NeighborPort != null))
-            {
-              res = new IPEndPoint(addr, follower.NeighborPort.Value);
-            }
-            else
-            {
-              // We do not know srNeighbor port of this follower yet (or we ignore it), we have to connect to its primary port and get that information.
-              int neighborPort = await GetServerRolePortFromPrimaryPort(addr, follower.PrimaryPort, ServerRoleType.Neighbor);
-              if (neighborPort != 0)
-              {
-                lockObject = UnitOfWork.FollowerLock;
-                await unitOfWork.AcquireLockAsync(lockObject);
-                unlock = true;
-
-                follower.NeighborPort = neighborPort;
-                if (!await unitOfWork.SaveAsync())
-                  log.Error("Unable to save new srNeighbor port information {0} of follower ID '{1}' to the database.", neighborPort, FollowerId.ToHex());
-
-                res = new IPEndPoint(addr, neighborPort);
-              }
-              else log.Debug("Unable to obtain srNeighbor port from primary port of follower ID '{0}'.", FollowerId.ToHex());
-            }
-          }
-          else
-          {
-            log.Error("Unable to find follower ID '{0}' in the database.", FollowerId.ToHex());
-            NotFound.Value = true;
-          }
-        }
-        catch (Exception e)
-        {
-          log.Error("Exception occurred: {0}", e.ToString());
-        }
-
-        if (unlock) unitOfWork.ReleaseLock(lockObject);
+        res = await unitOfWork.FollowerRepository.GetServerContactAsync(FollowerId, NotFound, IgnoreDbPortValue);
       }
 
       log.Trace("(-):{0}", res != null ? res.ToString() : "null");
@@ -849,7 +766,7 @@ namespace ProximityServer.Network
         DatabaseLock lockObject = UnitOfWork.NeighborhoodActionLock;
         try
         {
-          Neighbor neighbor = (await unitOfWork.NeighborRepository.GetAsync(n => n.NeighborId == NeighborId, null, true)).FirstOrDefault();
+          Neighbor neighbor = (await unitOfWork.NeighborRepository.GetAsync(n => n.NetworkId == NeighborId, null, true)).FirstOrDefault();
           if (neighbor != null)
           {
             string neighborInfo = JsonConvert.SerializeObject(neighbor);
@@ -914,7 +831,7 @@ namespace ProximityServer.Network
       try
       {
         neighbor = JsonConvert.DeserializeObject<Neighbor>(NeighborInfo);
-        ipAddress = IPAddress.Parse(neighbor.IpAddress);
+        ipAddress = new IPAddress(neighbor.IpAddress);
       }
       catch (Exception e)
       {
@@ -1186,6 +1103,15 @@ namespace ProximityServer.Network
                 ProxProtocolMessage updateMessage = client.MessageBuilder.CreateNeighborhoodSharedActivityUpdateRequest(updateList);
                 if (await client.SendNeighborhoodSharedProfileUpdateAsync(updateMessage))
                 {
+                  if (updateItem.ActionTypeCase == SharedActivityUpdateItem.ActionTypeOneofCase.Refresh)
+                  {
+                    // If database update fails, the follower server will just be refreshed again later.
+                    using (UnitOfWork unitOfWork = new UnitOfWork())
+                    {
+                      await unitOfWork.FollowerRepository.UpdateLastRefreshTimeAsync(FollowerId);
+                    }
+                  }
+
                   res = true;
                 }
                 else

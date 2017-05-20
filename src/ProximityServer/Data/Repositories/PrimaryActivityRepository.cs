@@ -18,7 +18,7 @@ namespace ProximityServer.Data.Repositories
   /// <summary>
   /// Repository for primary activities of the proximity server.
   /// </summary>
-  public class PrimaryActivityRepository : ActivityRepository<PrimaryActivity>
+  public class PrimaryActivityRepository : ActivityRepositoryBase<PrimaryActivity>
   {
     /// <summary>Class logger.</summary>
     private static Logger log = new Logger("ProximityServer.Data.Repositories.PrimaryActivityRepository");

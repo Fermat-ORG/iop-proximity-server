@@ -22,7 +22,7 @@ namespace ProximityServer.Data.Repositories
   /// <summary>
   /// Repository of proximity server neighbors.
   /// </summary>
-  public class NeighborRepository : GenericRepository<Neighbor>
+  public class NeighborRepository : RemoteServerRepositoryBase<Neighbor>
   {
     /// <summary>Class logger.</summary>
     private static Logger log = new Logger("ProximityServer.Data.Repositories.NeighborRepository");
@@ -36,6 +36,12 @@ namespace ProximityServer.Data.Repositories
     public NeighborRepository(Context Context, UnitOfWork UnitOfWork)
       : base(Context, UnitOfWork)
     {
+    }
+
+
+    public override DatabaseLock GetTableLock()
+    {
+      return UnitOfWork.NeighborLock;
     }
 
 
@@ -59,7 +65,7 @@ namespace ProximityServer.Data.Repositories
       if (!HoldingLocks) await unitOfWork.AcquireLockAsync(lockObject);
       try
       {
-        Neighbor neighbor = (await GetAsync(n => n.NeighborId == NeighborId)).FirstOrDefault();
+        Neighbor neighbor = (await GetAsync(n => n.NetworkId == NeighborId)).FirstOrDefault();
         if (neighbor != null)
         {
           Delete(neighbor);
@@ -158,55 +164,6 @@ namespace ProximityServer.Data.Repositories
 
 
     /// <summary>
-    /// Sets NeighborPort of a neighbor to null.
-    /// </summary>
-    /// <param name="NeighborId">Identifier of the neighbor server.</param>
-    /// <returns>true if the function succeeds, false otherwise.</returns>
-    public async Task<bool> ResetNeighborPortAsync(byte[] NeighborId)
-    {
-      log.Trace("(NeighborId:'{0}')", NeighborId.ToHex());
-
-      bool res = false;
-      bool dbSuccess = false;
-      DatabaseLock lockObject = UnitOfWork.FollowerLock;
-      using (IDbContextTransaction transaction = await unitOfWork.BeginTransactionWithLockAsync(lockObject))
-      {
-        try
-        {
-          Neighbor neighbor = (await GetAsync(f => f.NeighborId == NeighborId)).FirstOrDefault();
-          if (neighbor != null)
-          {
-            neighbor.NeighborPort = null;
-            Update(neighbor);
-
-            await unitOfWork.SaveThrowAsync();
-            transaction.Commit();
-            res = true;
-          }
-          else log.Error("Unable to find follower ID '{0}'.", NeighborId.ToHex());
-
-          dbSuccess = true;
-        }
-        catch (Exception e)
-        {
-          log.Error("Exception occurred: {0}", e.ToString());
-        }
-
-        if (!dbSuccess)
-        {
-          log.Warn("Rolling back transaction.");
-          unitOfWork.SafeTransactionRollback(transaction);
-        }
-
-        unitOfWork.ReleaseLock(lockObject);
-      }
-
-      log.Trace("(-):{0}", res);
-      return res;
-    }
-
-
-    /// <summary>
     /// Checks whether the server is the nearest server to a given location.
     /// </summary>
     /// <param name="TargetLocation">Target GPS location.</param>
@@ -241,9 +198,9 @@ namespace ProximityServer.Data.Repositories
           bool serverNearestWithThreshold = myDistance <= thresholdNeighborDistance;
           if (!serverNearestWithThreshold)
           {
-            NearestServerId.Value = neighbor.NeighborId;
+            NearestServerId.Value = neighbor.NetworkId;
             log.Debug("Server network ID '{0}', GPS location [{1}] is closer (distance {2} m, {3} m with threshold) to the target location [{4}] than the current server location [{5}] (distance {6} m).", 
-              neighbor.NeighborId.ToHex(), neighborLocation, neighborDistance.ToString(CultureInfo.InvariantCulture), thresholdNeighborDistance.ToString(CultureInfo.InvariantCulture), TargetLocation, 
+              neighbor.NetworkId.ToHex(), neighborLocation, neighborDistance.ToString(CultureInfo.InvariantCulture), thresholdNeighborDistance.ToString(CultureInfo.InvariantCulture), TargetLocation, 
               myLocation, myDistance.ToString(CultureInfo.InvariantCulture));
             res = false;
             break;
@@ -258,49 +215,6 @@ namespace ProximityServer.Data.Repositories
       log.Trace("(-):{0}", res);
       return res;
     }
-
-
-    /// <summary>
-    /// Updates LastRefreshTime of a neighbor server.
-    /// </summary>
-    /// <param name="NeighborId">Identifier of the neighbor server to update.</param>
-    /// <returns>true if the function succeeds, false otherwise.</returns>
-    public async Task<bool> UpdateNeighborLastRefreshTimeAsync(byte[] NeighborId)
-    {
-      log.Trace("(NeighborId:'{0}')", NeighborId.ToHex());
-
-      bool res = false;
-
-      DatabaseLock lockObject = UnitOfWork.NeighborLock;
-      await unitOfWork.AcquireLockAsync(lockObject);
-      try
-      {
-        Neighbor neighbor = (await GetAsync(n => n.NeighborId == NeighborId)).FirstOrDefault();
-        if (neighbor != null)
-        {
-          neighbor.LastRefreshTime = DateTime.UtcNow;
-          Update(neighbor);
-          await unitOfWork.SaveThrowAsync();
-        }
-        else
-        {
-          // Between the check couple of lines above and here, the requesting server stop being our neighbor
-          // we can ignore it now and proceed as this does no harm and the requesting server will be informed later.
-          log.Error("Client ID '{0}' is no longer our neighbor.", NeighborId.ToHex());
-        }
-      }
-      catch (Exception e)
-      {
-        log.Error("Exception occurred while trying to update LastRefreshTime of neighbor ID '{0}': {1}", NeighborId.ToHex(), e.ToString());
-      }
-
-      unitOfWork.ReleaseLock(lockObject);
-
-      log.Trace("(-):{0}", res);
-      return res;
-    }
-
-
 
 
     /// <summary>
@@ -320,11 +234,12 @@ namespace ProximityServer.Data.Repositories
       {
         try
         {
-          Neighbor neighbor = (await GetAsync(n => n.NeighborId == NeighborId)).FirstOrDefault();
+          Neighbor neighbor = (await GetAsync(n => n.NetworkId == NeighborId)).FirstOrDefault();
           if (neighbor != null)
           {
             // The neighbor is now initialized and is allowed to send us updates.
             neighbor.LastRefreshTime = DateTime.UtcNow;
+            neighbor.Initialized = true;
             neighbor.SharedActivities = ActivityDatabase.Count;
             Update(neighbor);
 
@@ -359,31 +274,5 @@ namespace ProximityServer.Data.Repositories
       log.Trace("(-):{0}", res);
       return res;
     }
-
-
-
-
-    /// <summary>
-    /// Checks whether the server is the nearest server to a given location.
-    /// </summary>
-    /// <param name="TargetLocation">Target GPS location.</param>
-    /// <param name="IgnoreServerIds">List of network IDs that should be ignored.</param>
-    /// <param name="NearestServerId">If the result is false, this is filled with network identifier of a neighbor server that is nearest to the target location.</param>
-    /// <param name="Threshold">Optionally, threshold value which allows the function to return true even if there exists a neighbor server that is actually closer 
-    /// to the target location, but it is only slightly closer than the proximity server.</param>
-    /// <returns>true if the server is the nearest proximity server to the target location, false if the server knows at least one other server that is closer
-    /// or if the function fails.</returns>
-    public async Task<ServerContactInfo> GetServerContactInfoAsync(byte[] NeighborId)
-    {
-      log.Trace("(NeighborId:'{0}')", NeighborId);
-
-      Neighbor neighbor = (await GetAsync(n => n.NeighborId == NeighborId, null, true)).FirstOrDefault();
-      ServerContactInfo res = neighbor.GetServerContactInfo();
-
-      log.Trace("(-):{0}", res != null ? "ServerContactInfo" : "null");
-      return res;
-    }
-
-
   }
 }
