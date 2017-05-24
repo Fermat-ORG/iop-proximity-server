@@ -477,7 +477,7 @@ namespace ProximityServer.Network
       ProxMessageBuilder messageBuilder = Client.MessageBuilder;
       PingRequest pingRequest = RequestMessage.Request.SingleRequest.Ping;
 
-      ProxProtocolMessage res = messageBuilder.CreatePingResponse(RequestMessage, pingRequest.Payload.ToByteArray(), ProtocolHelper.GetUnixTimestampMs());
+      ProxProtocolMessage res = messageBuilder.CreatePingResponse(RequestMessage, pingRequest.Payload.ToByteArray(), DateTime.UtcNow);
 
       log.Trace("(-):*.Response.Status={0}", res.Response.Status);
       return res;
@@ -655,6 +655,8 @@ namespace ProximityServer.Network
 
       ProxMessageBuilder messageBuilder = Client.MessageBuilder;
       StartConversationRequest startConversationRequest = RequestMessage.Request.ConversationRequest.Start;
+      if (startConversationRequest == null) startConversationRequest = new StartConversationRequest();
+
       byte[] clientChallenge = startConversationRequest.ClientChallenge.ToByteArray();
       byte[] pubKey = startConversationRequest.PublicKey.ToByteArray();
 
@@ -801,19 +803,27 @@ namespace ProximityServer.Network
               Activity = activityInformation,
               Signature = RequestMessage.Request.ConversationRequest.Signature
             };
-            PrimaryActivity activity = ActivityBase.FromSignedActivityInformation<PrimaryActivity>(signedActivityInformation); 
+            PrimaryActivity activity = ActivityBase.FromSignedActivityInformation<PrimaryActivity>(signedActivityInformation);
 
-            StrongBox<int> existingActivityId = new StrongBox<int>(0);
-            if (await unitOfWork.PrimaryActivityRepository.CreateAndPropagateAsync(activity, existingActivityId))
+            Status capRes = await unitOfWork.PrimaryActivityRepository.CreateAndPropagateAsync(activity);
+            switch (capRes)
             {
-              res = messageBuilder.CreateCreateActivityResponse(RequestMessage);
+              case Status.Ok:
+                res = messageBuilder.CreateCreateActivityResponse(RequestMessage);
+                break;
+
+              case Status.ErrorAlreadyExists:
+                res = messageBuilder.CreateErrorAlreadyExistsResponse(RequestMessage);
+                break;
+
+              case Status.ErrorQuotaExceeded:
+                res = messageBuilder.CreateErrorQuotaExceededResponse(RequestMessage);
+                break;
+
+              default:
+                // Internal error
+                break;
             }
-            else if (existingActivityId.Value != 0)
-            {
-              log.Debug("Activity with the activity ID {0} and owner identity ID '{1}' already exists with database ID {2}.", activity.ActivityId, activity.OwnerIdentityId.ToHex(), existingActivityId.Value);
-              res = messageBuilder.CreateErrorAlreadyExistsResponse(RequestMessage);
-            }
-            // else Internal error
           }
           else
           {

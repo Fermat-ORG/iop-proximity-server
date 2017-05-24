@@ -185,7 +185,7 @@ namespace ProximityServer.Network
       if (details == null) res = true;
       else ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, ErrorPrefix + details);
 
-      log.Trace("(-):{0}");
+      log.Trace("(-):{0}", res);
       return res;
     }
 

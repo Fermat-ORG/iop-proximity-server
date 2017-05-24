@@ -13,6 +13,7 @@ using IopCommon.Multiformats;
 using IopCommon;
 using IopServerCore.Kernel;
 using IopServerCore.Network.CAN;
+using IopProtocol;
 
 namespace ProximityServer.Kernel
 {
@@ -99,6 +100,8 @@ namespace ProximityServer.Kernel
     public bool CanProximityServerContactInformationChanged;
 
 
+    /// <summary>GPS location loaded from database.</summary>
+    public GpsLocation LocLocation;
 
 
 
@@ -445,6 +448,8 @@ namespace ProximityServer.Kernel
           Setting primaryPort = unitOfWork.SettingsRepository.Get(s => s.Name == "PrimaryPort").FirstOrDefault();
           Setting canIpnsLastSequenceNumber = unitOfWork.SettingsRepository.Get(s => s.Name == "CanIpnsLastSequenceNumber").FirstOrDefault();
           Setting canProximityServerContactInformationHash = unitOfWork.SettingsRepository.Get(s => s.Name == "CanProximityServerContactInformationHash").FirstOrDefault();
+          Setting locLocationLatitude = unitOfWork.SettingsRepository.Get(s => s.Name == "LocLocationLatitude").FirstOrDefault();
+          Setting locLocationLongitude = unitOfWork.SettingsRepository.Get(s => s.Name == "LocLocationLongitude").FirstOrDefault();
 
           bool havePrivateKey = (privateKeyHex != null) && !string.IsNullOrEmpty(privateKeyHex.Value);
           bool havePublicKey = (publicKeyHex != null) && !string.IsNullOrEmpty(publicKeyHex.Value);
@@ -512,6 +517,21 @@ namespace ProximityServer.Kernel
                 log.Info("Primary port in configuration file is different from the database value.");
 
                 CanProximityServerContactInformationChanged = true;
+              }
+            }
+
+            if (!error)
+            {
+              if ((locLocationLatitude != null) && (locLocationLongitude != null))
+              {
+                decimal lat;
+                decimal lon;
+                if (decimal.TryParse(locLocationLatitude.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out lat)
+                  && decimal.TryParse(locLocationLongitude.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out lon))
+                {
+                  LocLocation = new GpsLocation(lat, lon);
+                  log.Info("Server GPS location is [{0}].", LocLocation);
+                }
               }
             }
 

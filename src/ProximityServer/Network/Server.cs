@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using IopCommon;
 using IopServerCore.Kernel;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace ProximityServer.Network
 {
@@ -47,6 +49,15 @@ namespace ProximityServer.Network
     public const int ServerKeepAliveIntervalMs = 300 * 1000;
 
 
+
+    /// <summary>Event that is set when DelayedStartupThread is not running.</summary>
+    private ManualResetEvent delayedStartupThreadFinished = new ManualResetEvent(true);
+
+    /// <summary>Thread that is responsible for delated initialization of this component.</summary>
+    private Thread delayedStartupThread;
+
+
+
     public override bool Init()
     {
       log.Info("()");
@@ -54,13 +65,11 @@ namespace ProximityServer.Network
       bool res = false;
       try
       {
-        if (base.Init())
-        {
-          RegisterCronJobs();
+        delayedStartupThread = new Thread(new ThreadStart(DelayedStartupThread));
+        delayedStartupThread.Start();
 
-          res = true;
-          Initialized = true;
-        }
+        res = true;
+        Initialized = true;
       }
       catch (Exception e)
       {
@@ -68,7 +77,12 @@ namespace ProximityServer.Network
       }
 
       if (!res)
+      {
         ShutdownSignaling.SignalShutdown();
+
+        if ((delayedStartupThread != null) && !delayedStartupThreadFinished.WaitOne(10000))
+          log.Error("Delayed startup thread did not terminated in 10 seconds.");
+      }
 
       log.Info("(-):{0}", res);
       return res;
@@ -80,6 +94,9 @@ namespace ProximityServer.Network
       log.Info("()");
 
       base.Shutdown();
+
+      if ((delayedStartupThread != null) && !delayedStartupThreadFinished.WaitOne(10000))
+        log.Error("Delayed startup thread did not terminated in 10 seconds.");
 
       log.Info("(-)");
     }
@@ -122,6 +139,65 @@ namespace ProximityServer.Network
       await CheckInactiveClientConnectionsAsync();
 
       log.Trace("(-)");
+    }
+
+
+    /// <summary>
+    /// Thread that is responsible for late initialization of network servers.
+    /// This is needed because in order for the proximity server to run, it must know its location.
+    /// The location is received from LOC server, but there is no guarantee LOC server is running 
+    /// when the proximity server starts.
+    /// </summary>
+    private async void DelayedStartupThread()
+    {
+      LogDiagnosticContext.Start();
+
+      log.Info("()");
+
+      delayedStartupThreadFinished.Reset();
+
+      try
+      {
+        Console.WriteLine("Waiting for location initialization ...");
+        LocationBasedNetwork loc = (LocationBasedNetwork)Base.ComponentDictionary[LocationBasedNetwork.ComponentName];
+        bool locInit = false;
+        try
+        {
+          locInit = await loc.LocLocationInitializedEvent.Task;
+        }
+        catch
+        {
+          // Catch cancellation exception.
+          log.Trace("Shutdown detected.");
+        }
+
+        if (locInit)
+        {
+          Console.WriteLine("Location initialization completed.");
+          log.Debug("LOC location is initialized, we can continue with Network server component initialization.");
+          if (base.Init())
+          {
+            RegisterCronJobs();
+          }
+          else
+          {
+            log.Error("Delayed initialization failed, initiating shutdown.");
+            Base.ComponentManager.GlobalShutdown.SignalShutdown();
+          }
+        }
+      }
+      catch (Exception e)
+      {
+        log.Error("Exception occurred (and rethrowing): {0}", e.ToString());
+        await Task.Delay(5000);
+        throw e;
+      }
+
+      delayedStartupThreadFinished.Set();
+
+      log.Info("(-)");
+
+      LogDiagnosticContext.Stop();
     }
   }
 }

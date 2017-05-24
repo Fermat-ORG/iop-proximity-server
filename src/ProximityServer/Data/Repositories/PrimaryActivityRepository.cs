@@ -12,6 +12,8 @@ using IopCommon;
 using IopServerCore.Data;
 using System.Runtime.CompilerServices;
 using IopServerCore.Kernel;
+using ProximityServer.Kernel;
+using Iop.Shared;
 
 namespace ProximityServer.Data.Repositories
 {
@@ -63,13 +65,15 @@ namespace ProximityServer.Data.Repositories
     /// Inserts a new activity to the database provided that it does not exists yet. Then a new neighborhood action is created to propagate the new activity to the neighborhood.
     /// </summary>
     /// <param name="Activity">New activity to insert to database.</param>
-    /// <param name="ExistingActivityDbId">If the function fails because the activity of the same activity ID and owner network ID exists, this is filled with database ID of the existing activity.</param>
-    /// <returns>true if the function succeeds, false otherwise.</returns>
-    public async Task<bool> CreateAndPropagateAsync(PrimaryActivity Activity, StrongBox<int> ExistingActivityDbId)
+    /// <returns>Status.Ok if the function succeeds,
+    /// Status.ErrorAlreadyExists if activity with the same owner and ID already exists,
+    /// Status.ErrorQuotaExceeded if the server is not willing to create any more activities because it has reached its limit already,
+    /// Status.ErrorInternal if the function fails for other reason.</returns>
+    public async Task<Status> CreateAndPropagateAsync(PrimaryActivity Activity)
     {
       log.Trace("()");
 
-      bool res = false;
+      Status res = Status.ErrorInternal;
 
       bool success = false;
       bool signalNeighborhoodAction = false;
@@ -78,22 +82,32 @@ namespace ProximityServer.Data.Repositories
       {
         try
         {
-          PrimaryActivity existingActivity = (await GetAsync(a => (a.ActivityId == Activity.ActivityId) && (a.OwnerIdentityId == Activity.OwnerIdentityId))).FirstOrDefault();
-          if (existingActivity == null)
+          int hostedActivities = await CountAsync(null);
+          log.Trace("Currently hosting {0} activities.", hostedActivities);
+          if (hostedActivities < Config.Configuration.MaxActivities)
           {
-            await InsertAsync(existingActivity);
+            PrimaryActivity existingActivity = (await GetAsync(a => (a.ActivityId == Activity.ActivityId) && (a.OwnerIdentityId == Activity.OwnerIdentityId))).FirstOrDefault();
+            if (existingActivity == null)
+            {
+              await InsertAsync(Activity);
 
-            // The activity has to be propagated to all our followers we create database actions that will be processed by dedicated thread.
-            signalNeighborhoodAction = await unitOfWork.NeighborhoodActionRepository.AddActivityFollowerActionsAsync(NeighborhoodActionType.AddActivity, Activity.ActivityId, Activity.OwnerIdentityId, Activity.OwnerPublicKey.ToHex());
+              // The activity has to be propagated to all our followers we create database actions that will be processed by dedicated thread.
+              signalNeighborhoodAction = await unitOfWork.NeighborhoodActionRepository.AddActivityFollowerActionsAsync(NeighborhoodActionType.AddActivity, Activity.ActivityId, Activity.OwnerIdentityId, Activity.OwnerPublicKey.ToHex());
 
-            await unitOfWork.SaveThrowAsync();
-            transaction.Commit();
-            success = true;
+              await unitOfWork.SaveThrowAsync();
+              transaction.Commit();
+              success = true;
+            }
+            else
+            {
+              log.Debug("Activity with the activity ID {0} and owner identity ID '{1}' already exists with database ID {2}.", Activity.ActivityId, Activity.OwnerIdentityId.ToHex(), existingActivity.DbId);
+              res = Status.ErrorAlreadyExists;
+            }
           }
           else
           {
-            log.Debug("Activity already exists.");
-            ExistingActivityDbId.Value = existingActivity.DbId;
+            log.Debug("MaxActivities {0} has been reached.", Config.Configuration.MaxActivities);
+            res = Status.ErrorQuotaExceeded;
           }
         }
         catch (Exception e)
@@ -119,7 +133,7 @@ namespace ProximityServer.Data.Repositories
           neighborhoodActionProcessor.Signal();
         }
 
-        res = true;
+        res = Status.Ok;
       }
 
 

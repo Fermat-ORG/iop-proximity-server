@@ -21,25 +21,30 @@ namespace ProximityServer.Migrations
                     b.Property<int>("DbId")
                         .ValueGeneratedOnAdd();
 
-                    b.Property<byte[]>("FollowerId")
+                    b.Property<bool>("Initialized");
+
+                    b.Property<byte[]>("IpAddress")
                         .IsRequired()
-                        .HasMaxLength(32);
+                        .HasMaxLength(16);
 
-                    b.Property<string>("IpAddress")
-                        .IsRequired();
-
-                    b.Property<DateTime?>("LastRefreshTime");
+                    b.Property<DateTime>("LastRefreshTime");
 
                     b.Property<int?>("NeighborPort");
+
+                    b.Property<byte[]>("NetworkId")
+                        .IsRequired()
+                        .HasMaxLength(32);
 
                     b.Property<int>("PrimaryPort");
 
                     b.HasKey("DbId");
 
-                    b.HasIndex("FollowerId")
-                        .IsUnique();
+                    b.HasIndex("Initialized");
 
                     b.HasIndex("LastRefreshTime");
+
+                    b.HasIndex("NetworkId")
+                        .IsUnique();
 
                     b.HasIndex("IpAddress", "PrimaryPort");
 
@@ -51,10 +56,13 @@ namespace ProximityServer.Migrations
                     b.Property<int>("DbId")
                         .ValueGeneratedOnAdd();
 
-                    b.Property<string>("IpAddress")
-                        .IsRequired();
+                    b.Property<bool>("Initialized");
 
-                    b.Property<DateTime?>("LastRefreshTime");
+                    b.Property<byte[]>("IpAddress")
+                        .IsRequired()
+                        .HasMaxLength(16);
+
+                    b.Property<DateTime>("LastRefreshTime");
 
                     b.Property<decimal>("LocationLatitude")
                         .HasColumnType("decimal(9,6)");
@@ -62,11 +70,11 @@ namespace ProximityServer.Migrations
                     b.Property<decimal>("LocationLongitude")
                         .HasColumnType("decimal(9,6)");
 
-                    b.Property<byte[]>("NeighborId")
+                    b.Property<int?>("NeighborPort");
+
+                    b.Property<byte[]>("NetworkId")
                         .IsRequired()
                         .HasMaxLength(32);
-
-                    b.Property<int?>("NeighborPort");
 
                     b.Property<int>("PrimaryPort");
 
@@ -74,9 +82,11 @@ namespace ProximityServer.Migrations
 
                     b.HasKey("DbId");
 
+                    b.HasIndex("Initialized");
+
                     b.HasIndex("LastRefreshTime");
 
-                    b.HasIndex("NeighborId")
+                    b.HasIndex("NetworkId")
                         .IsUnique();
 
                     b.HasIndex("IpAddress", "PrimaryPort");
@@ -89,7 +99,7 @@ namespace ProximityServer.Migrations
                     b.Property<int>("DbId")
                         .ValueGeneratedOnAdd();
 
-                    b.Property<int>("ActivityId");
+                    b.Property<uint>("ActivityId");
 
                     b.Property<DateTime>("ExpirationTime");
 
@@ -117,11 +127,19 @@ namespace ProximityServer.Migrations
 
                     b.Property<ushort>("OwnerProfileServerPrimaryPort");
 
+                    b.Property<byte[]>("OwnerPublicKey")
+                        .IsRequired()
+                        .HasMaxLength(128);
+
                     b.Property<uint>("PrecisionRadius");
 
                     b.Property<byte[]>("PrimaryServerId")
                         .IsRequired()
                         .HasMaxLength(32);
+
+                    b.Property<byte[]>("Signature")
+                        .IsRequired()
+                        .HasMaxLength(100);
 
                     b.Property<DateTime>("StartTime");
 
@@ -168,7 +186,7 @@ namespace ProximityServer.Migrations
                         .IsRequired()
                         .HasMaxLength(32);
 
-                    b.Property<int?>("TargetActivityId")
+                    b.Property<uint>("TargetActivityId")
                         .HasMaxLength(32);
 
                     b.Property<byte[]>("TargetActivityOwnerId")
@@ -203,7 +221,7 @@ namespace ProximityServer.Migrations
                     b.Property<int>("DbId")
                         .ValueGeneratedOnAdd();
 
-                    b.Property<int>("ActivityId");
+                    b.Property<uint>("ActivityId");
 
                     b.Property<DateTime>("ExpirationTime");
 
@@ -231,7 +249,15 @@ namespace ProximityServer.Migrations
 
                     b.Property<ushort>("OwnerProfileServerPrimaryPort");
 
+                    b.Property<byte[]>("OwnerPublicKey")
+                        .IsRequired()
+                        .HasMaxLength(128);
+
                     b.Property<uint>("PrecisionRadius");
+
+                    b.Property<byte[]>("Signature")
+                        .IsRequired()
+                        .HasMaxLength(100);
 
                     b.Property<DateTime>("StartTime");
 

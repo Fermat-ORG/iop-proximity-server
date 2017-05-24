@@ -181,19 +181,25 @@ namespace ProximityServer.Data.Repositories
 
       LocationBasedNetwork loc = (LocationBasedNetwork)Base.ComponentDictionary[LocationBasedNetwork.ComponentName];
       GpsLocation myLocation = loc.Location;
-      double myDistance = TargetLocation.DistanceTo(myLocation);
+      double myDistance = myLocation.DistanceTo(TargetLocation);
       log.Trace("Server's distance to the activity location is {0} metres.", myDistance.ToString(CultureInfo.InvariantCulture));
 
       double thresholdCoef = 1;
       if (Threshold != null) thresholdCoef += Threshold.Value;
 
+      HashSet<byte[]> ignoredServersIds = new HashSet<byte[]>(IgnoreServerIds, StructuralEqualityComparer<byte[]>.Default);
+
       try
       {
-        List<Neighbor> allNeighbors = (await GetAsync(null, null, true)).ToList();
+        // We only consider neighbors that finished initialization process.
+        // Other nodes might be new and not synced yet with their neighborhood.        
+        List<Neighbor> allNeighbors = (await GetAsync(n => n.Initialized == true, null, true)).ToList();
         foreach (Neighbor neighbor in allNeighbors)
         {
+          if (ignoredServersIds.Contains(neighbor.NetworkId)) continue;
+
           GpsLocation neighborLocation = new GpsLocation(neighbor.LocationLatitude, neighbor.LocationLongitude);
-          double neighborDistance = neighborLocation.DistanceTo(myLocation);
+          double neighborDistance = neighborLocation.DistanceTo(TargetLocation);
           double thresholdNeighborDistance = neighborDistance * thresholdCoef;
           bool serverNearestWithThreshold = myDistance <= thresholdNeighborDistance;
           if (!serverNearestWithThreshold)

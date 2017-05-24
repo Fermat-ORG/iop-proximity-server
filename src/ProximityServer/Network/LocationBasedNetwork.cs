@@ -7,6 +7,10 @@ using IopProtocol;
 using IopCommon;
 using IopServerCore.Kernel;
 using IopServerCore.Network.LOC;
+using ProximityServer.Data;
+using IopServerCore.Data;
+using ProximityServer.Data.Models;
+using System.Globalization;
 
 namespace ProximityServer.Network
 {
@@ -36,17 +40,38 @@ namespace ProximityServer.Network
     private LocClient client;
 
     /// <summary>true if the component received current information about the server's neighborhood from the LOC server.</summary>
-    private bool locServerInitialized = false;
+    private volatile bool locServerInitialized = false;
     /// <summary>true if the component received current information about the server's neighborhood from the LOC server.</summary>
     public bool LocServerInitialized { get { return locServerInitialized; } }
+
+    /// <summary>true if the component knows the server's location.</summary>
+    public bool LocLocationInitialized { get { return location != null; } }
+
+    /// <summary>Event that signals when GPS location is initialized.</summary>
+    public TaskCompletionSource<bool> LocLocationInitializedEvent = new TaskCompletionSource<bool>();
 
     /// <summary>Lock object to protect write access to locServerInitialized.</summary>
     private object locServerInitializedLock = new object();
 
     /// <summary>GPS location of this server received from local LOC node.</summary>
-    private GpsLocation location;
+    private volatile GpsLocation location;
     /// <summary>GPS location of this server received from local LOC node.</summary>
-    public GpsLocation Location { get { return location; } }
+    public GpsLocation Location
+    {
+      get
+      {
+        return location;
+      }
+      set
+      {
+        if (value != null)
+        {
+          location = value;
+          LocLocationInitializedEvent.SetResult(true);
+        }
+      }
+    }
+
 
     /// <summary>
     /// Initializes the component.
@@ -66,6 +91,8 @@ namespace ProximityServer.Network
       try
       {
         client = new LocClient(Config.Configuration.LocEndPoint, new LocMessageProcessor(), ShutdownSignaling);
+
+        this.Location = Config.Configuration.LocLocation;
 
         locConnectionThread = new Thread(new ThreadStart(LocConnectionThread));
         locConnectionThread.Start();
@@ -98,6 +125,8 @@ namespace ProximityServer.Network
       log.Info("()");
 
       ShutdownSignaling.SignalShutdown();
+
+      LocLocationInitializedEvent.TrySetCanceled();
 
       if (client != null) client.Dispose();
 
@@ -173,7 +202,8 @@ namespace ProximityServer.Network
             GpsLocation serverLocation = new GpsLocation(0, 0);
             if (await client.RegisterPrimaryServerRoleAsync(Config.Configuration.ServerRoles.GetRolePort((uint)ServerRole.Primary), serverLocation))
             {
-              this.location = serverLocation;
+              this.Location = serverLocation;
+              await SaveLocationToSettings();
 
               // Ask LOC server about initial set of neighborhood nodes.
               if (await GetNeighborhoodInformationAsync())
@@ -268,5 +298,47 @@ namespace ProximityServer.Network
       log.Trace("(-)");
     }
 
+
+    /// <summary>
+    /// Saves GPS location of the server to database settings.
+    /// </summary>
+    /// <returns>true if the function succeeds, false otherwise.</returns>
+    private async Task<bool> SaveLocationToSettings()
+    {
+      log.Trace("()");
+
+      bool res = false;
+      using (UnitOfWork unitOfWork = new UnitOfWork())
+      {
+        DatabaseLock lockObject = UnitOfWork.SettingsLock;
+        await unitOfWork.AcquireLockAsync(lockObject);
+
+        try
+        {
+          Setting locLocationLatitude = new Setting("LocLocationLatitude", Location.Latitude.ToString(CultureInfo.InvariantCulture));
+          unitOfWork.SettingsRepository.Insert(locLocationLatitude);
+
+          Setting locLocationLongitude = new Setting("LocLocationLongitude", Location.Longitude.ToString(CultureInfo.InvariantCulture));
+          unitOfWork.SettingsRepository.Insert(locLocationLongitude);
+
+          log.Debug("Saving new GPS location [{0}] to database.", Location);
+
+          await unitOfWork.SettingsRepository.AddOrUpdate(locLocationLatitude);
+          await unitOfWork.SettingsRepository.AddOrUpdate(locLocationLongitude);
+
+          await unitOfWork.SaveThrowAsync();
+          res = true;
+        }
+        catch (Exception e)
+        {
+          log.Error("Exception occurred: {0}", e.ToString());
+        }
+
+        unitOfWork.ReleaseLock(lockObject);
+      }
+
+      log.Trace("(-):{0}", res);
+      return res;
+    }
   }
 }

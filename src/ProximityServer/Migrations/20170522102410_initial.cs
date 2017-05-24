@@ -4,7 +4,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace ProximityServer.Migrations
 {
-    public partial class first : Migration
+    public partial class initial : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {
@@ -14,10 +14,11 @@ namespace ProximityServer.Migrations
                 {
                     DbId = table.Column<int>(nullable: false)
                         .Annotation("Sqlite:Autoincrement", true),
-                    FollowerId = table.Column<byte[]>(maxLength: 32, nullable: false),
-                    IpAddress = table.Column<string>(nullable: false),
-                    LastRefreshTime = table.Column<DateTime>(nullable: true),
+                    Initialized = table.Column<bool>(nullable: false),
+                    IpAddress = table.Column<byte[]>(maxLength: 16, nullable: false),
+                    LastRefreshTime = table.Column<DateTime>(nullable: false),
                     NeighborPort = table.Column<int>(nullable: true),
+                    NetworkId = table.Column<byte[]>(maxLength: 32, nullable: false),
                     PrimaryPort = table.Column<int>(nullable: false)
                 },
                 constraints: table =>
@@ -31,12 +32,13 @@ namespace ProximityServer.Migrations
                 {
                     DbId = table.Column<int>(nullable: false)
                         .Annotation("Sqlite:Autoincrement", true),
-                    IpAddress = table.Column<string>(nullable: false),
-                    LastRefreshTime = table.Column<DateTime>(nullable: true),
+                    Initialized = table.Column<bool>(nullable: false),
+                    IpAddress = table.Column<byte[]>(maxLength: 16, nullable: false),
+                    LastRefreshTime = table.Column<DateTime>(nullable: false),
                     LocationLatitude = table.Column<decimal>(type: "decimal(9,6)", nullable: false),
                     LocationLongitude = table.Column<decimal>(type: "decimal(9,6)", nullable: false),
-                    NeighborId = table.Column<byte[]>(maxLength: 32, nullable: false),
                     NeighborPort = table.Column<int>(nullable: true),
+                    NetworkId = table.Column<byte[]>(maxLength: 32, nullable: false),
                     PrimaryPort = table.Column<int>(nullable: false),
                     SharedActivities = table.Column<int>(nullable: false)
                 },
@@ -51,7 +53,7 @@ namespace ProximityServer.Migrations
                 {
                     DbId = table.Column<int>(nullable: false)
                         .Annotation("Sqlite:Autoincrement", true),
-                    ActivityId = table.Column<int>(nullable: false),
+                    ActivityId = table.Column<uint>(nullable: false),
                     ExpirationTime = table.Column<DateTime>(nullable: false),
                     ExtraData = table.Column<string>(maxLength: 2048, nullable: false),
                     LocationLatitude = table.Column<decimal>(type: "decimal(9,6)", nullable: false),
@@ -60,8 +62,10 @@ namespace ProximityServer.Migrations
                     OwnerProfileServerId = table.Column<byte[]>(maxLength: 32, nullable: false),
                     OwnerProfileServerIpAddress = table.Column<byte[]>(maxLength: 16, nullable: false),
                     OwnerProfileServerPrimaryPort = table.Column<ushort>(nullable: false),
+                    OwnerPublicKey = table.Column<byte[]>(maxLength: 128, nullable: false),
                     PrecisionRadius = table.Column<uint>(nullable: false),
                     PrimaryServerId = table.Column<byte[]>(maxLength: 32, nullable: false),
+                    Signature = table.Column<byte[]>(maxLength: 100, nullable: false),
                     StartTime = table.Column<DateTime>(nullable: false),
                     Type = table.Column<string>(maxLength: 64, nullable: false),
                     Version = table.Column<byte[]>(maxLength: 3, nullable: false)
@@ -80,7 +84,7 @@ namespace ProximityServer.Migrations
                     AdditionalData = table.Column<string>(nullable: true),
                     ExecuteAfter = table.Column<DateTime>(nullable: true),
                     ServerId = table.Column<byte[]>(maxLength: 32, nullable: false),
-                    TargetActivityId = table.Column<int>(maxLength: 32, nullable: true),
+                    TargetActivityId = table.Column<uint>(maxLength: 32, nullable: false),
                     TargetActivityOwnerId = table.Column<byte[]>(maxLength: 32, nullable: true),
                     Timestamp = table.Column<DateTime>(nullable: false),
                     Type = table.Column<int>(nullable: false)
@@ -96,7 +100,7 @@ namespace ProximityServer.Migrations
                 {
                     DbId = table.Column<int>(nullable: false)
                         .Annotation("Sqlite:Autoincrement", true),
-                    ActivityId = table.Column<int>(nullable: false),
+                    ActivityId = table.Column<uint>(nullable: false),
                     ExpirationTime = table.Column<DateTime>(nullable: false),
                     ExtraData = table.Column<string>(maxLength: 2048, nullable: false),
                     LocationLatitude = table.Column<decimal>(type: "decimal(9,6)", nullable: false),
@@ -105,7 +109,9 @@ namespace ProximityServer.Migrations
                     OwnerProfileServerId = table.Column<byte[]>(maxLength: 32, nullable: false),
                     OwnerProfileServerIpAddress = table.Column<byte[]>(maxLength: 16, nullable: false),
                     OwnerProfileServerPrimaryPort = table.Column<ushort>(nullable: false),
+                    OwnerPublicKey = table.Column<byte[]>(maxLength: 128, nullable: false),
                     PrecisionRadius = table.Column<uint>(nullable: false),
+                    Signature = table.Column<byte[]>(maxLength: 100, nullable: false),
                     StartTime = table.Column<DateTime>(nullable: false),
                     Type = table.Column<string>(maxLength: 64, nullable: false),
                     Version = table.Column<byte[]>(maxLength: 3, nullable: false)
@@ -128,10 +134,9 @@ namespace ProximityServer.Migrations
                 });
 
             migrationBuilder.CreateIndex(
-                name: "IX_Follower_FollowerId",
+                name: "IX_Follower_Initialized",
                 table: "Follower",
-                column: "FollowerId",
-                unique: true);
+                column: "Initialized");
 
             migrationBuilder.CreateIndex(
                 name: "IX_Follower_LastRefreshTime",
@@ -139,9 +144,20 @@ namespace ProximityServer.Migrations
                 column: "LastRefreshTime");
 
             migrationBuilder.CreateIndex(
+                name: "IX_Follower_NetworkId",
+                table: "Follower",
+                column: "NetworkId",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
                 name: "IX_Follower_IpAddress_PrimaryPort",
                 table: "Follower",
                 columns: new[] { "IpAddress", "PrimaryPort" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Neighbor_Initialized",
+                table: "Neighbor",
+                column: "Initialized");
 
             migrationBuilder.CreateIndex(
                 name: "IX_Neighbor_LastRefreshTime",
@@ -149,9 +165,9 @@ namespace ProximityServer.Migrations
                 column: "LastRefreshTime");
 
             migrationBuilder.CreateIndex(
-                name: "IX_Neighbor_NeighborId",
+                name: "IX_Neighbor_NetworkId",
                 table: "Neighbor",
-                column: "NeighborId",
+                column: "NetworkId",
                 unique: true);
 
             migrationBuilder.CreateIndex(

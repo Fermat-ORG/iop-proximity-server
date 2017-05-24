@@ -1,4 +1,5 @@
 ﻿using IopCommon;
+using IopServerCore.Kernel;
 using System;
 using System.IO;
 using System.Threading;
@@ -48,7 +49,7 @@ namespace ProximityServer
         bool shutdown = false;
         while (!shutdown)
         {
-          shutdown = (readEnterTask.Status != TaskStatus.WaitingForActivation) || CheckExternalShutdown();
+          shutdown = Base.ComponentManager.GlobalShutdown.IsShutdown || (readEnterTask.Status != TaskStatus.WaitingForActivation) || CheckExternalShutdown();
           Thread.Sleep(1000);
         }
 
