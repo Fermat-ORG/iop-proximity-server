@@ -56,23 +56,8 @@ namespace ProximityServer.Network
     public ProxMessageBuilder MessageBuilder { get { return messageBuilder; } }
 
 
-    // Client Context Section
-
     /// <summary>Current status of the conversation with the client.</summary>
     public ClientConversationStatus ConversationStatus;
-
-    /// <summary>Lock object to protect access to activity search result cache objects.</summary>
-    private object activitySearchResultCacheLock = new object();
-
-    /// <summary>Cache for activity search result queries.</summary>
-    private List<ActivityQueryInformation> activitySearchResultCache;
-
-    /// <summary>
-    /// Timer for activity search result cache expiration. When the timer's routine is called, 
-    /// the cache is deleted and cached results are no longer available.
-    /// </summary>
-    private Timer activitySearchResultCacheExpirationTimer;
-
 
     /// <summary>True if the client connection is from a follower server who initiated the neighborhood initialization process in this session.</summary>
     public bool NeighborhoodInitializationProcessInProgress;
@@ -84,7 +69,19 @@ namespace ProximityServer.Network
     /// <summary>Lock for access to unfinishedRequests list.</summary>
     private object unfinishedRequestsLock = new object();
 
-    // \Client Context Section
+
+    /// <summary>
+    /// Timer for activity search result cache expiration. When the timer's routine is called, 
+    /// the cache is deleted and cached results are no longer available.
+    /// </summary>
+    private Timer activitySearchResultCacheExpirationTimer;
+
+    /// <summary>Lock object to protect access to activity search result cache objects.</summary>
+    private object activitySearchResultCacheLock = new object();
+
+    /// <summary>Cache for activity search result queries.</summary>
+    private List<ActivityQueryInformation> activitySearchResultCache;
+
 
 
     /// <summary>

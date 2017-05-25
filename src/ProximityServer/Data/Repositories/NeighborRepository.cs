@@ -168,12 +168,12 @@ namespace ProximityServer.Data.Repositories
     /// </summary>
     /// <param name="TargetLocation">Target GPS location.</param>
     /// <param name="IgnoreServerIds">List of network IDs that should be ignored.</param>
-    /// <param name="NearestServerId">If the result is false, this is filled with network identifier of a neighbor server that is nearest to the target location.</param>
+    /// <param name="CloserServerId">If the result is false, this is filled with network identifier of a neighbor server that is closer to the target location.</param>
     /// <param name="Threshold">Optionally, threshold value which allows the function to return true even if there exists a neighbor server that is actually closer 
     /// to the target location, but it is only slightly closer than the proximity server.</param>
     /// <returns>true if the server is the nearest proximity server to the target location, false if the server knows at least one other server that is closer
     /// or if the function fails.</returns>
-    public async Task<bool> IsServerNearestToLocationAsync(GpsLocation TargetLocation, List<byte[]> IgnoreServerIds, StrongBox<byte[]> NearestServerId, double? Threshold = null)
+    public async Task<bool> IsServerNearestToLocationAsync(GpsLocation TargetLocation, List<byte[]> IgnoreServerIds, StrongBox<byte[]> CloserServerId, double? Threshold = null)
     {
       log.Trace("(TargetLocation:[{0}],IgnoreServerIds:'{1}',Threshold:{2})", TargetLocation, string.Join(",", IgnoreServerIds), Threshold != null ? Threshold.Value.ToString(CultureInfo.InvariantCulture) : "null");
 
@@ -204,7 +204,7 @@ namespace ProximityServer.Data.Repositories
           bool serverNearestWithThreshold = myDistance <= thresholdNeighborDistance;
           if (!serverNearestWithThreshold)
           {
-            NearestServerId.Value = neighbor.NetworkId;
+            CloserServerId.Value = neighbor.NetworkId;
             log.Debug("Server network ID '{0}', GPS location [{1}] is closer (distance {2} m, {3} m with threshold) to the target location [{4}] than the current server location [{5}] (distance {6} m).", 
               neighbor.NetworkId.ToHex(), neighborLocation, neighborDistance.ToString(CultureInfo.InvariantCulture), thresholdNeighborDistance.ToString(CultureInfo.InvariantCulture), TargetLocation, 
               myLocation, myDistance.ToString(CultureInfo.InvariantCulture));

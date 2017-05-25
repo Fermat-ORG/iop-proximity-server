@@ -152,12 +152,12 @@ namespace ProximityServer.Data.Repositories
     /// <param name="UpdateRequest">Update request received from the client.</param>
     /// <param name="Signature">Signature of the updated activity data from the client.</param>
     /// <param name="OwnerIdentityId">Network ID of the client who requested the update.</param>
-    /// <param name="NearestServerId">If the result is Status.ErrorRejected, this is filled with network identifier of a neighbor server that is nearest to the target location.</param>
+    /// <param name="CloserServerId">If the result is Status.ErrorRejected, this is filled with network identifier of a neighbor server that is closer to the target location.</param>
     /// <returns>Status.Ok if the function succeeds, 
     /// Status.ErrorNotFound if the activity to update does not exist,
     /// Status.ErrorRejected if the update was rejected and the client should migrate the activity to closest proximity server,
     /// Status.ErrorInternal otherwise.</returns>
-    public async Task<Iop.Shared.Status> UpdateAndPropagateAsync(UpdateActivityRequest UpdateRequest, byte[] Signature, byte[] OwnerIdentityId, StrongBox<byte[]> NearestServerId)
+    public async Task<Status> UpdateAndPropagateAsync(UpdateActivityRequest UpdateRequest, byte[] Signature, byte[] OwnerIdentityId, StrongBox<byte[]> CloserServerId)
     {
       log.Trace("(UpdateRequest.Activity.Id:{0},OwnerIdentityId:'{1}')", UpdateRequest.Activity.Id, OwnerIdentityId.ToHex());
 

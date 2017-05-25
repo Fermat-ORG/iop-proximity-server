@@ -46,6 +46,14 @@ namespace ProximityServer.Network
     /// <summary>List of server's network peers and clients owned by Network.Server component.</summary>
     public IncomingClientList clientList;
 
+
+    /// <summary>List of all supported proximity protocol versions that this message processor implements.</summary>
+    public static HashSet<SemVer> AllSupportedVersions = new HashSet<SemVer>()
+    {
+      SemVer.V100
+    };
+
+
     /// <summary>
     /// Creates a new instance connected to the parent role server.
     /// </summary>
@@ -118,6 +126,14 @@ namespace ProximityServer.Network
                         responseMessage = await ProcessMessageGetActivityInformationRequestAsync(client, incomingMessage);
                         break;
 
+                      case SingleRequest.RequestTypeOneofCase.ActivitySearch:
+                        responseMessage = await ProcessMessageActivitySearchRequestAsync(client, incomingMessage);
+                        break;
+
+                      case SingleRequest.RequestTypeOneofCase.ActivitySearchPart:
+                        responseMessage = ProcessMessageActivitySearchPartRequest(client, incomingMessage);
+                        break;
+
                       default:
                         log.Warn("Invalid request type '{0}'.", singleRequest.RequestTypeCase);
                         break;
@@ -153,14 +169,6 @@ namespace ProximityServer.Network
 
                       case ConversationRequest.RequestTypeOneofCase.DeleteActivity:
                         responseMessage = await ProcessMessageDeleteActivityRequestAsync(client, incomingMessage);
-                        break;
-
-                      case ConversationRequest.RequestTypeOneofCase.ActivitySearch:
-                        responseMessage = await ProcessMessageActivitySearchRequestAsync(client, incomingMessage);
-                        break;
-
-                      case ConversationRequest.RequestTypeOneofCase.ActivitySearchPart:
-                        responseMessage = ProcessMessageActivitySearchPartRequest(client, incomingMessage);
                         break;
 
                       case ConversationRequest.RequestTypeOneofCase.StartNeighborhoodInitialization:
@@ -351,71 +359,82 @@ namespace ProximityServer.Network
 
     /// <summary>
     /// Verifies that client's request was not sent against the protocol rules - i.e. that the role server
-    /// that received the message is serving the role the message was designed for and that the conversation 
-    /// status with the clients matches the required status for the particular message.
+    /// that received the message is serving the role the message was designed for, the protocol version matches
+    /// what the server support and that the conversation status with the clients matches the required status for the particular message.
     /// </summary>
     /// <param name="Client">Client that sent the request.</param>
     /// <param name="RequestMessage">Full request message.</param>
     /// <param name="RequiredRole">Server role required for the message, or null if all roles servers can handle this message.</param>
     /// <param name="RequiredConversationStatus">Required conversation status for the message, or null for single messages.</param>
+    /// <param name="SupportedVersions">List of supported versions for the specific request.</param>
     /// <param name="ResponseMessage">If the verification fails, this is filled with error response to be sent to the client.</param>
     /// <returns>true if the function succeeds (i.e. required conditions are met and the message can be processed), false otherwise.</returns>
-    public bool CheckSessionConditions(IncomingClient Client, ProxProtocolMessage RequestMessage, ServerRole? RequiredRole, ClientConversationStatus? RequiredConversationStatus, out ProxProtocolMessage ResponseMessage)
+    public bool CheckRequestConditions(IncomingClient Client, ProxProtocolMessage RequestMessage, ServerRole? RequiredRole, ClientConversationStatus? RequiredConversationStatus, HashSet<SemVer> SupportedVersions, out ProxProtocolMessage ResponseMessage)
     {
-      log.Trace("(RequiredRole:{0},RequiredConversationStatus:{1})", RequiredRole != null ? RequiredRole.ToString() : "null", RequiredConversationStatus != null ? RequiredConversationStatus.Value.ToString() : "null");
+      log.Trace("(RequiredRole:{0},RequiredConversationStatus:{1},SupportedVersions:[{2}])", RequiredRole != null ? RequiredRole.ToString() : "null", RequiredConversationStatus != null ? RequiredConversationStatus.Value.ToString() : "null", string.Join(",", SupportedVersions));
 
       bool res = false;
       ResponseMessage = null;
 
-      string requestName = RequestMessage.Request.ConversationTypeCase == Request.ConversationTypeOneofCase.SingleRequest ? "single request " + RequestMessage.Request.SingleRequest.RequestTypeCase.ToString() : "conversation request " + RequestMessage.Request.ConversationRequest.RequestTypeCase.ToString();
+      bool isSingleRequest = RequestMessage.Request.ConversationTypeCase == Request.ConversationTypeOneofCase.SingleRequest;
+      string requestName = isSingleRequest ? "single request " + RequestMessage.Request.SingleRequest.RequestTypeCase.ToString() : "conversation request " + RequestMessage.Request.ConversationRequest.RequestTypeCase.ToString();
 
       // RequiredRole contains one or more roles and the current server has to have at least one of them.
       if ((RequiredRole == null) || ((roleServer.Roles & (uint)RequiredRole.Value) != 0))
       {
-        if (RequiredConversationStatus == null)
+        SemVer clientRequestVersion = isSingleRequest ? new SemVer(RequestMessage.Request.SingleRequest.Version) : new SemVer(Client.MessageBuilder.Version);
+        if (SupportedVersions.Contains(clientRequestVersion))
         {
-          res = true;
+          if (RequiredConversationStatus == null)
+          {
+            res = true;
+          }
+          else
+          {
+            switch (RequiredConversationStatus.Value)
+            {
+              case ClientConversationStatus.NoConversation:
+              case ClientConversationStatus.ConversationStarted:
+                res = Client.ConversationStatus == RequiredConversationStatus.Value;
+                if (!res)
+                {
+                  log.Warn("Client sent {0} but the conversation status is {1}.", requestName, Client.ConversationStatus);
+                  ResponseMessage = Client.MessageBuilder.CreateErrorBadConversationStatusResponse(RequestMessage);
+                }
+                break;
+
+              case ClientConversationStatus.Verified:
+                res = Client.ConversationStatus == RequiredConversationStatus.Value;
+                if (!res)
+                {
+                  log.Warn("Client sent {0} but the conversation status is {1}.", requestName, Client.ConversationStatus);
+                  ResponseMessage = Client.MessageBuilder.CreateErrorUnauthorizedResponse(RequestMessage);
+                }
+                break;
+
+
+              case ClientConversationStatus.ConversationAny:
+                res = (Client.ConversationStatus == ClientConversationStatus.ConversationStarted)
+                  || (Client.ConversationStatus == ClientConversationStatus.Verified);
+
+                if (!res)
+                {
+                  log.Warn("Client sent {0} but the conversation status is {1}.", requestName, Client.ConversationStatus);
+                  ResponseMessage = Client.MessageBuilder.CreateErrorBadConversationStatusResponse(RequestMessage);
+                }
+                break;
+
+              default:
+                log.Error("Unknown conversation status '{0}'.", Client.ConversationStatus);
+                ResponseMessage = Client.MessageBuilder.CreateErrorInternalResponse(RequestMessage);
+                break;
+            }
+          }
         }
         else
         {
-          switch (RequiredConversationStatus.Value)
-          {
-            case ClientConversationStatus.NoConversation:
-            case ClientConversationStatus.ConversationStarted:
-              res = Client.ConversationStatus == RequiredConversationStatus.Value;
-              if (!res)
-              {
-                log.Warn("Client sent {0} but the conversation status is {1}.", requestName, Client.ConversationStatus);
-                ResponseMessage = Client.MessageBuilder.CreateErrorBadConversationStatusResponse(RequestMessage);
-              }
-              break;
-
-            case ClientConversationStatus.Verified:
-              res = Client.ConversationStatus == RequiredConversationStatus.Value;
-              if (!res)
-              {
-                log.Warn("Client sent {0} but the conversation status is {1}.", requestName, Client.ConversationStatus);
-                ResponseMessage = Client.MessageBuilder.CreateErrorUnauthorizedResponse(RequestMessage);
-              }
-              break;
-
-
-            case ClientConversationStatus.ConversationAny:
-              res = (Client.ConversationStatus == ClientConversationStatus.ConversationStarted)
-                || (Client.ConversationStatus == ClientConversationStatus.Verified);
-
-              if (!res)
-              {
-                log.Warn("Client sent {0} but the conversation status is {1}.", requestName, Client.ConversationStatus);
-                ResponseMessage = Client.MessageBuilder.CreateErrorBadConversationStatusResponse(RequestMessage);
-              }
-              break;
-
-            default:
-              log.Error("Unknown conversation status '{0}'.", Client.ConversationStatus);
-              ResponseMessage = Client.MessageBuilder.CreateErrorInternalResponse(RequestMessage);
-              break;
-          }
+          log.Warn("Received {0} version {1}, but supported versions for this request are [{2}].", requestName, clientRequestVersion, string.Join(",", SupportedVersions));
+          ResponseMessage = Client.MessageBuilder.CreateErrorUnsupportedResponse(RequestMessage);
         }
       }
       else
@@ -423,6 +442,7 @@ namespace ProximityServer.Network
         log.Warn("Received {0} on server without {1} role(s) (server roles are {2}).", requestName, RequiredRole.Value, roleServer.Roles);
         ResponseMessage = Client.MessageBuilder.CreateErrorBadRoleResponse(RequestMessage);
       }
+
 
       log.Trace("(-):{0}", res);
       return res;
@@ -474,10 +494,17 @@ namespace ProximityServer.Network
     {
       log.Trace("()");
 
+      ProxProtocolMessage res = null;
+      if (!CheckRequestConditions(Client, RequestMessage, null, null, AllSupportedVersions, out res))
+      {
+        log.Trace("(-):*.Response.Status={0}", res.Response.Status);
+        return res;
+      }
+
       ProxMessageBuilder messageBuilder = Client.MessageBuilder;
       PingRequest pingRequest = RequestMessage.Request.SingleRequest.Ping;
 
-      ProxProtocolMessage res = messageBuilder.CreatePingResponse(RequestMessage, pingRequest.Payload.ToByteArray(), DateTime.UtcNow);
+      res = messageBuilder.CreatePingResponse(RequestMessage, pingRequest.Payload.ToByteArray(), DateTime.UtcNow);
 
       log.Trace("(-):*.Response.Status={0}", res.Response.Status);
       return res;
@@ -496,7 +523,7 @@ namespace ProximityServer.Network
       log.Trace("()");
 
       ProxProtocolMessage res = null;
-      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Primary, null, out res))
+      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Primary, null, AllSupportedVersions, out res))
       {
         log.Trace("(-):*.Response.Status={0}", res.Response.Status);
         return res;
@@ -574,7 +601,7 @@ namespace ProximityServer.Network
       log.Trace("()");
 
       ProxProtocolMessage res = null;
-      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Client, null, out res))
+      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Client, null, AllSupportedVersions, out res))
       {
         log.Trace("(-):*.Response.Status={0}", res.Response.Status);
         return res;
@@ -646,7 +673,7 @@ namespace ProximityServer.Network
       log.Trace("()");
 
       ProxProtocolMessage res = null;
-      if (!CheckSessionConditions(Client, RequestMessage, null, ClientConversationStatus.NoConversation, out res))
+      if (!CheckRequestConditions(Client, RequestMessage, null, ClientConversationStatus.NoConversation, AllSupportedVersions, out res))
       {
         log.Trace("(-):*.Response.Status={0}", res.Response.Status);
         return res;
@@ -723,7 +750,7 @@ namespace ProximityServer.Network
       log.Trace("()");
 
       ProxProtocolMessage res = null;
-      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Client | ServerRole.Neighbor, ClientConversationStatus.ConversationStarted, out res))
+      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Client | ServerRole.Neighbor, ClientConversationStatus.ConversationStarted, AllSupportedVersions, out res))
       {
         log.Trace("(-):*.Response.Status={0}", res.Response.Status);
         return res;
@@ -771,7 +798,7 @@ namespace ProximityServer.Network
       log.Trace("()");
 
       ProxProtocolMessage res = null;
-      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.Verified, out res))
+      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.Verified, AllSupportedVersions, out res))
       {
         log.Trace("(-):*.Response.Status={0}", res.Response.Status);
         return res;
@@ -794,9 +821,9 @@ namespace ProximityServer.Network
 
         using (UnitOfWork unitOfWork = new UnitOfWork())
         {
-          StrongBox<byte[]> nearestServerId = new StrongBox<byte[]>(null);
+          StrongBox<byte[]> closerServerId = new StrongBox<byte[]>(null);
           List<byte[]> ignoreServerIds = new List<byte[]>(createActivityRequest.IgnoreServerIds.Select(i => i.ToByteArray()));
-          if (await unitOfWork.NeighborRepository.IsServerNearestToLocationAsync(activityLocation, ignoreServerIds, nearestServerId))
+          if (await unitOfWork.NeighborRepository.IsServerNearestToLocationAsync(activityLocation, ignoreServerIds, closerServerId))
           {
             SignedActivityInformation signedActivityInformation = new SignedActivityInformation()
             {
@@ -827,10 +854,10 @@ namespace ProximityServer.Network
           }
           else
           {
-            if (nearestServerId.Value != null)
+            if (closerServerId.Value != null)
             {
               log.Debug("Creation of activity rejected because the server is not the nearest proximity server.");
-              res = messageBuilder.CreateErrorRejectedResponse(RequestMessage, nearestServerId.Value.ToHex());
+              res = messageBuilder.CreateErrorRejectedResponse(RequestMessage, closerServerId.Value.ToHex());
             }
             // else Internal error
           }
@@ -856,7 +883,7 @@ namespace ProximityServer.Network
       log.Trace("()");
 
       ProxProtocolMessage res = null;
-      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.Verified, out res))
+      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.Verified, AllSupportedVersions, out res))
       {
         log.Trace("(-):*.Response.Status={0}", res.Response.Status);
         return res;
@@ -872,9 +899,9 @@ namespace ProximityServer.Network
       {
         using (UnitOfWork unitOfWork = new UnitOfWork())
         {
-          StrongBox<byte[]> nearestServerId = new StrongBox<byte[]>(null);
+          StrongBox<byte[]> closerServerId = new StrongBox<byte[]>(null);
           byte[] signature = RequestMessage.Request.ConversationRequest.Signature.ToByteArray();
-          Status status = await unitOfWork.PrimaryActivityRepository.UpdateAndPropagateAsync(updateActivityRequest, signature, Client.IdentityId, nearestServerId);
+          Status status = await unitOfWork.PrimaryActivityRepository.UpdateAndPropagateAsync(updateActivityRequest, signature, Client.IdentityId, closerServerId);
           switch (status)
           {
             case Status.Ok:
@@ -883,7 +910,7 @@ namespace ProximityServer.Network
               break;
 
             case Status.ErrorRejected:
-              res = messageBuilder.CreateErrorRejectedResponse(RequestMessage, nearestServerId.Value.ToHex());
+              res = messageBuilder.CreateErrorRejectedResponse(RequestMessage, closerServerId.Value.ToHex());
               break;
 
             case Status.ErrorNotFound:
@@ -919,7 +946,7 @@ namespace ProximityServer.Network
       log.Trace("()");
 
       ProxProtocolMessage res = null;
-      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.Verified, out res))
+      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.Verified, AllSupportedVersions, out res))
       {
         log.Trace("(-):*.Response.Status={0}", res.Response.Status);
         return res;
@@ -998,7 +1025,7 @@ namespace ProximityServer.Network
       log.Trace("()");
 
       ProxProtocolMessage res = null;
-      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.ConversationAny, out res))
+      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.ConversationAny, AllSupportedVersions, out res))
       {
         log.Trace("(-):*.Response.Status={0}", res.Response.Status);
         return res;
@@ -1006,7 +1033,7 @@ namespace ProximityServer.Network
 
 
       ProxMessageBuilder messageBuilder = Client.MessageBuilder;
-      ActivitySearchRequest activitySearchRequest = RequestMessage.Request.ConversationRequest.ActivitySearch;
+      ActivitySearchRequest activitySearchRequest = RequestMessage.Request.SingleRequest.ActivitySearch;
       if (activitySearchRequest == null) activitySearchRequest = new ActivitySearchRequest();
 
       ProxProtocolMessage errorResponse;
@@ -1285,7 +1312,7 @@ namespace ProximityServer.Network
       log.Trace("()");
 
       ProxProtocolMessage res = null;
-      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.ConversationAny, out res))
+      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.ConversationAny, AllSupportedVersions, out res))
       {
         log.Trace("(-):*.Response.Status={0}", res.Response.Status);
         return res;
@@ -1293,7 +1320,7 @@ namespace ProximityServer.Network
 
 
       ProxMessageBuilder messageBuilder = Client.MessageBuilder;
-      ActivitySearchPartRequest activitySearchPartRequest = RequestMessage.Request.ConversationRequest.ActivitySearchPart;
+      ActivitySearchPartRequest activitySearchPartRequest = RequestMessage.Request.SingleRequest.ActivitySearchPart;
       if (activitySearchPartRequest == null) activitySearchPartRequest = new ActivitySearchPartRequest();
 
       int cacheResultsCount;
@@ -1348,7 +1375,7 @@ namespace ProximityServer.Network
       log.Trace("()");
 
       ProxProtocolMessage res = null;
-      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Neighbor, ClientConversationStatus.Verified, out res))
+      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Neighbor, ClientConversationStatus.Verified, AllSupportedVersions, out res))
       {
         log.Trace("(-):*.Response.Status={0}", res.Response.Status);
         return res;
@@ -1647,7 +1674,7 @@ namespace ProximityServer.Network
       log.Trace("()");
 
       ProxProtocolMessage res = null;
-      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Neighbor, ClientConversationStatus.Verified, out res))
+      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Neighbor, ClientConversationStatus.Verified, AllSupportedVersions, out res))
       {
         log.Trace("(-):*.Response.Status={0}", res.Response.Status);
         return res;
@@ -1674,7 +1701,7 @@ namespace ProximityServer.Network
       log.Trace("()");
 
       ProxProtocolMessage res = null;
-      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Neighbor, ClientConversationStatus.Verified, out res))
+      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Neighbor, ClientConversationStatus.Verified, AllSupportedVersions, out res))
       {
         log.Trace("(-):*.Response.Status={0}", res.Response.Status);
         return res;
@@ -2016,7 +2043,7 @@ namespace ProximityServer.Network
       log.Trace("()");
 
       ProxProtocolMessage res = null;
-      if (!CheckSessionConditions(Client, RequestMessage, ServerRole.Neighbor, ClientConversationStatus.Verified, out res))
+      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Neighbor, ClientConversationStatus.Verified, AllSupportedVersions, out res))
       {
         log.Trace("(-):*.Response.Status={0}", res.Response.Status);
         return res;
