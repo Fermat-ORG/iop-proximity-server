@@ -205,7 +205,7 @@ namespace ProximityServer.Data.Repositories
           if (!serverNearestWithThreshold)
           {
             CloserServerId.Value = neighbor.NetworkId;
-            log.Debug("Server network ID '{0}', GPS location [{1}] is closer (distance {2} m, {3} m with threshold) to the target location [{4}] than the current server location [{5}] (distance {6} m).", 
+            log.Debug("Server network ID '{0}', GPS location [{1}] is closer (distance {2}m, {3}m with threshold) to the target location [{4}] than the current server location [{5}] (distance {6}m).", 
               neighbor.NetworkId.ToHex(), neighborLocation, neighborDistance.ToString(CultureInfo.InvariantCulture), thresholdNeighborDistance.ToString(CultureInfo.InvariantCulture), TargetLocation, 
               myLocation, myDistance.ToString(CultureInfo.InvariantCulture));
             res = false;

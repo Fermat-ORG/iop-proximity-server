@@ -161,7 +161,7 @@ namespace ProximityServer.Data.Repositories
     {
       log.Trace("(UpdateRequest.Activity.Id:{0},OwnerIdentityId:'{1}')", UpdateRequest.Activity.Id, OwnerIdentityId.ToHex());
 
-      Iop.Shared.Status res = Iop.Shared.Status.ErrorInternal;
+      Status res = Status.ErrorInternal;
 
       bool success = false;
       bool signalNeighborhoodAction = false;
@@ -183,11 +183,10 @@ namespace ProximityServer.Data.Repositories
             bool error = false;
             if (locationChanged)
             {
-              StrongBox<byte[]> nearestServerId = new StrongBox<byte[]>(null);
               List<byte[]> ignoreServerIds = new List<byte[]>(UpdateRequest.IgnoreServerIds.Select(i => i.ToByteArray()));
-              if (!await unitOfWork.NeighborRepository.IsServerNearestToLocationAsync(newLocation, ignoreServerIds, nearestServerId, ProxMessageBuilder.ActivityMigrationDistanceTolerance))
+              if (!await unitOfWork.NeighborRepository.IsServerNearestToLocationAsync(newLocation, ignoreServerIds, CloserServerId, ProxMessageBuilder.ActivityMigrationDistanceTolerance))
               {
-                if (nearestServerId.Value != null)
+                if (CloserServerId.Value != null)
                 {
                   migrateActivity = true;
                   log.Debug("Activity's new location is outside the reach of this proximity server, the activity will be deleted from the database.");
@@ -215,7 +214,7 @@ namespace ProximityServer.Data.Repositories
                   ActivityChange changes = existingActivity.CompareChangeTo(updatedActivity);
                   
                   // If only changes in the activity are related to location or expiration time, the activity update is not propagated to the neighborhood.
-                  propagateChange = (changes & ~(ActivityChange.LocationLatitude | ActivityChange.LocationLongitude | ActivityChange.ExpirationTime)) != 0;
+                  propagateChange = (changes & ~(ActivityChange.LocationLatitude | ActivityChange.LocationLongitude | ActivityChange.PrecisionRadius | ActivityChange.ExpirationTime)) != 0;
                 }
 
                 existingActivity.CopyFromSignedActivityInformation(signedActivityInformation);
@@ -227,7 +226,7 @@ namespace ProximityServer.Data.Repositories
                   // The activity has to be propagated to all our followers we create database actions that will be processed by dedicated thread.
                   signalNeighborhoodAction = await unitOfWork.NeighborhoodActionRepository.AddActivityFollowerActionsAsync(NeighborhoodActionType.ChangeActivity, existingActivity.ActivityId, existingActivity.OwnerIdentityId);
                 }
-                else log.Trace("Change of activity ID {0}, owner identity ID '{1}' won't be propagated to neighborhood.", existingActivity.ActivityId, existingActivity.OwnerIdentityId);
+                else log.Trace("Change of activity ID {0}, owner identity ID '{1}' won't be propagated to neighborhood.", existingActivity.ActivityId, existingActivity.OwnerIdentityId.ToHex());
 
                 await unitOfWork.SaveThrowAsync();
                 transaction.Commit();
@@ -239,8 +238,8 @@ namespace ProximityServer.Data.Repositories
           }
           else
           {
-            log.Debug("Activity ID {0}, owner identity ID '{1}' does not exist.", activityInformation.Id, OwnerIdentityId);
-            res = Iop.Shared.Status.ErrorNotFound;
+            log.Debug("Activity ID {0}, owner identity ID '{1}' does not exist.", activityInformation.Id, OwnerIdentityId.ToHex());
+            res = Status.ErrorNotFound;
           }
         }
         catch (Exception e)
@@ -267,13 +266,13 @@ namespace ProximityServer.Data.Repositories
           if (!notFound.Value)
           {
             // The activity was deleted from the database and this change will be propagated to the neighborhood.
-            log.Debug("Update rejected, activity ID {0}, owner identity ID '{1}' deleted.", activityInformation.Id, OwnerIdentityId);
-            res = Iop.Shared.Status.ErrorRejected;
+            log.Debug("Update rejected, activity ID {0}, owner identity ID '{1}' deleted.", activityInformation.Id, OwnerIdentityId.ToHex());
+            res = Status.ErrorRejected;
           }
           else
           {
             // Activity of given ID not found among activities created by the client.
-            res = Iop.Shared.Status.ErrorNotFound;
+            res = Status.ErrorNotFound;
           }
         }
       }
@@ -287,7 +286,7 @@ namespace ProximityServer.Data.Repositories
           neighborhoodActionProcessor.Signal();
         }
 
-        res = Iop.Shared.Status.Ok;
+        res = Status.Ok;
       }
 
 
@@ -330,7 +329,7 @@ namespace ProximityServer.Data.Repositories
           }
           else
           {
-            log.Debug("Activity ID {0}, owner identity ID '{1}' does not exist.", ActivityId, OwnerIdentityId);
+            log.Debug("Activity ID {0}, owner identity ID '{1}' does not exist.", ActivityId, OwnerIdentityId.ToHex());
             NotFound.Value = true;
           }
         }
