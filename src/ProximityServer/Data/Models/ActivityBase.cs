@@ -43,15 +43,6 @@ namespace ProximityServer.Data.Models
     /// <summary>Maximum number of primary activities that a proximity server can serve.</summary>
     public const int MaxPrimaryActivities = 50000;
 
-    /// <summary>Maximum number of bytes that activity type can occupy.</summary>
-    public const int MaxActivityTypeLengthBytes = 64;
-
-    /// <summary>Maximum number of bytes that profile extra data can occupy.</summary>
-    public const int MaxActivityExtraDataLengthBytes = 2048;
-
-    /// <summary>Maximum value of activity location precision.</summary>
-    public const int MaxLocationPrecision = 1000;
-
     /// <summary>Maximum life time of the activity in hours. Activity's expiration time can't be set more than this many hours in the future.</summary>
     public const int MaxActivityLifeTimeHours = 24;
 
@@ -103,7 +94,7 @@ namespace ProximityServer.Data.Models
     /// <summary>Profile type.</summary>
     /// <remarks>This is index - see ProximityServer.Data.Context.OnModelCreating.</remarks>
     [Required]
-    [MaxLength(MaxActivityTypeLengthBytes)]
+    [MaxLength(ProxMessageBuilder.MaxActivityTypeLengthBytes)]
     public string Type { get; set; }
 
     /// <summary>
@@ -160,7 +151,7 @@ namespace ProximityServer.Data.Models
     /// <summary>User defined extra data that serve for satisfying search queries in proximity server network.</summary>
     /// <remarks>This is index - see ProximityServer.Data.Context.OnModelCreating.</remarks>
     [Required(AllowEmptyStrings = true)]
-    [MaxLength(MaxActivityExtraDataLengthBytes)]
+    [MaxLength(ProxMessageBuilder.MaxActivityExtraDataLengthBytes)]
     public string ExtraData { get; set; }
 
 

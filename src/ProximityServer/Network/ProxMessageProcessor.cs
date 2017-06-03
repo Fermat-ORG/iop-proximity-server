@@ -624,12 +624,15 @@ namespace ProximityServer.Network
           if (activity == null)
           {
             activity = (await unitOfWork.NeighborActivityRepository.GetAsync(a => (a.ActivityId == activityId) && (a.OwnerIdentityId == ownerIdentityId))).FirstOrDefault();
-            byte[] primaryServerId = (activity as NeighborActivity).PrimaryServerId;
-            primaryContactInfo = await unitOfWork.NeighborRepository.GetServerContactInfoAsync(primaryServerId);
-            if (primaryContactInfo == null)
+            if (activity != null)
             {
-              log.Warn("Activity ID {0}, owner identity ID '{1}' was managed by neighbor ID '{2}' that can't be found.", activityId, ownerIdentityId.ToHex(), primaryServerId.ToHex());
-              res = messageBuilder.CreateErrorNotFoundResponse(RequestMessage);
+              byte[] primaryServerId = (activity as NeighborActivity).PrimaryServerId;
+              primaryContactInfo = await unitOfWork.NeighborRepository.GetServerContactInfoAsync(primaryServerId);
+              if (primaryContactInfo == null)
+              {
+                log.Warn("Activity ID {0}, owner identity ID '{1}' was managed by neighbor ID '{2}' that can't be found.", activityId, ownerIdentityId.ToHex(), primaryServerId.ToHex());
+                res = messageBuilder.CreateErrorNotFoundResponse(RequestMessage);
+              }
             }
           }
 
@@ -1025,7 +1028,7 @@ namespace ProximityServer.Network
       log.Trace("()");
 
       ProxProtocolMessage res = null;
-      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.ConversationAny, AllSupportedVersions, out res))
+      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Client, null, AllSupportedVersions, out res))
       {
         log.Trace("(-):*.Response.Status={0}", res.Response.Status);
         return res;
@@ -1238,9 +1241,9 @@ namespace ProximityServer.Network
               // Filter out activities that do not match exact location filter and extraData filter, mind the precision information.
               GpsLocation activityLocation = new GpsLocation(activity.LocationLatitude, activity.LocationLongitude);
               if (LocationFilter != null)
-              {                
-                double distance = GpsLocation.DistanceBetween(LocationFilter, activityLocation) - (double)activity.PrecisionRadius;
-                bool withinArea = distance <= (double)RadiusFilter;
+              {
+                double distance = GpsLocation.DistanceBetween(LocationFilter, activityLocation);
+                bool withinArea = distance - (double)activity.PrecisionRadius <= (double)RadiusFilter;
                 if (!withinArea)
                 {
                   filteredOutLocation++;
@@ -1260,7 +1263,7 @@ namespace ProximityServer.Network
 
               // Convert activity to search result format.
               ServerContactInfo serverContactInfo = null;
-              if (isPrimary)
+              if (!isPrimary)
               {
                 byte[] primaryServerId = (activity as NeighborActivity).PrimaryServerId;
                 if (!neighborServerContactInfo.TryGetValue(primaryServerId, out serverContactInfo))
@@ -1312,7 +1315,7 @@ namespace ProximityServer.Network
       log.Trace("()");
 
       ProxProtocolMessage res = null;
-      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Client, ClientConversationStatus.ConversationAny, AllSupportedVersions, out res))
+      if (!CheckRequestConditions(Client, RequestMessage, ServerRole.Client, null, AllSupportedVersions, out res))
       {
         log.Trace("(-):*.Response.Status={0}", res.Response.Status);
         return res;

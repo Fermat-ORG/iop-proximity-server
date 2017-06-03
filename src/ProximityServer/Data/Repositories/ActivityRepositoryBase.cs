@@ -177,7 +177,7 @@ namespace ProximityServer.Data.Repositories
       // We have to add maximum allowed location precision to the radius here to include all activities 
       // that could possibly be within the range. Actual activity precision will be used later 
       // to filter out activities precisely with the location filter.
-      double radius = (double)Radius + (double)ActivityBase.MaxLocationPrecision;
+      double radius = (double)Radius + (double)ProxMessageBuilder.MaxLocationPrecision;
       if (radius >= northPoleDistance)
       {
         // 2) Distance to pole is not larger than the radius:
@@ -208,7 +208,7 @@ namespace ProximityServer.Data.Repositories
         // Using this square we will find latitude and longitude ranges for the database query.
 
         // Find a GPS square that contains the whole target circle area.
-        GpsSquare square = LocationFilter.GetSquare((double)Radius);
+        GpsSquare square = LocationFilter.GetSquare(radius);
 
         // Get latitude range - this is simple, left-top and right-top corners define the max latitude,
         // and left-bottom and right-bottom corners define the min latitude.

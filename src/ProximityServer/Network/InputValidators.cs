@@ -101,10 +101,10 @@ namespace ProximityServer.Network
         if (activityType == null) activityType = "";
 
         int byteLen = Encoding.UTF8.GetByteCount(activityType);
-        bool activityTypeValid = (0 < byteLen) && (byteLen <= ActivityBase.MaxActivityTypeLengthBytes);
+        bool activityTypeValid = (0 < byteLen) && (byteLen <= ProxMessageBuilder.MaxActivityTypeLengthBytes);
         if (!activityTypeValid)
         {
-          log.Debug("Activity type too long or zero length ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityTypeLengthBytes);
+          log.Debug("Activity type too long or zero length ({0} bytes, limit is {1}).", byteLen, ProxMessageBuilder.MaxActivityTypeLengthBytes);
           details = "type";
         }
       }
@@ -128,10 +128,10 @@ namespace ProximityServer.Network
       if (details == null)
       {
         uint precision = Activity.Precision;
-        bool precisionValid = (0 <= precision) && (precision <= ActivityBase.MaxLocationPrecision);
+        bool precisionValid = (0 <= precision) && (precision <= ProxMessageBuilder.MaxLocationPrecision);
         if (!precisionValid)
         {
-          log.Debug("Precision '{0}' is not an integer between 0 and {1}.", precision, ActivityBase.MaxLocationPrecision);
+          log.Debug("Precision '{0}' is not an integer between 0 and {1}.", precision, ProxMessageBuilder.MaxLocationPrecision);
           details = "precision";
         }
       }
@@ -175,9 +175,9 @@ namespace ProximityServer.Network
 
         // Extra data is semicolon separated 'key=value' list, max ActivityBase.MaxActivityExtraDataLengthBytes bytes long.
         int byteLen = Encoding.UTF8.GetByteCount(extraData);
-        if (byteLen > ActivityBase.MaxActivityExtraDataLengthBytes)
+        if (byteLen > ProxMessageBuilder.MaxActivityExtraDataLengthBytes)
         {
-          log.Debug("Extra data too large ({0} bytes, limit is {1}).", byteLen, ActivityBase.MaxActivityExtraDataLengthBytes);
+          log.Debug("Extra data too large ({0} bytes, limit is {1}).", byteLen, ProxMessageBuilder.MaxActivityExtraDataLengthBytes);
           details = "extraData";
         }
       }
@@ -375,8 +375,7 @@ namespace ProximityServer.Network
       int totalResultLimit = ProxMessageProcessor.ActivitySearchMaxTotalRecords;
 
       bool maxResponseRecordCountValid = (1 <= ActivitySearchRequest.MaxResponseRecordCount)
-        && (ActivitySearchRequest.MaxResponseRecordCount <= responseResultLimit)
-        && (ActivitySearchRequest.MaxResponseRecordCount <= ActivitySearchRequest.MaxTotalRecordCount);
+        && (ActivitySearchRequest.MaxResponseRecordCount <= responseResultLimit);
       if (!maxResponseRecordCountValid)
       {
         log.Debug("Invalid maxResponseRecordCount value '{0}'.", ActivitySearchRequest.MaxResponseRecordCount);
@@ -385,7 +384,9 @@ namespace ProximityServer.Network
 
       if (details == null)
       {
-        bool maxTotalRecordCountValid = (1 <= ActivitySearchRequest.MaxTotalRecordCount) && (ActivitySearchRequest.MaxTotalRecordCount <= totalResultLimit);
+        bool maxTotalRecordCountValid = (1 <= ActivitySearchRequest.MaxTotalRecordCount) 
+          && (ActivitySearchRequest.MaxTotalRecordCount <= totalResultLimit)
+          && (ActivitySearchRequest.MaxResponseRecordCount <= ActivitySearchRequest.MaxTotalRecordCount);
         if (!maxTotalRecordCountValid)
         {
           log.Debug("Invalid maxTotalRecordCount value '{0}'.", ActivitySearchRequest.MaxTotalRecordCount);
