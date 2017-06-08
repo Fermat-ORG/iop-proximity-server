@@ -916,6 +916,10 @@ namespace ProximityServer.Network
               res = messageBuilder.CreateErrorRejectedResponse(RequestMessage, closerServerId.Value.ToHex());
               break;
 
+            case Status.ErrorInvalidValue:
+              res = messageBuilder.CreateErrorInvalidValueResponse(RequestMessage, "activity.type");
+              break;
+
             case Status.ErrorNotFound:
               // Activity of given ID not found among activities created by the client.
               res = messageBuilder.CreateErrorNotFoundResponse(RequestMessage);
@@ -1983,10 +1987,21 @@ namespace ProximityServer.Network
               NeighborActivity existingActivity = (await UnitOfWork.NeighborActivityRepository.GetAsync(a => (a.ActivityId == activityId) && (a.OwnerIdentityId == ownerIdentityId) && (a.PrimaryServerId == Neighbor.NetworkId))).FirstOrDefault();
               if (existingActivity != null)
               {
-                existingActivity.CopyFromSignedActivityInformation(changeItem.SignedActivity);
+                NeighborActivity updatedActivity = ActivityBase.FromSignedActivityInformation<NeighborActivity>(changeItem.SignedActivity);
+                ActivityChange changes = existingActivity.CompareChangeTo(updatedActivity);
+                if ((changes & ActivityChange.Type) == 0)
+                {
+                  existingActivity.CopyFromSignedActivityInformation(changeItem.SignedActivity, Neighbor.NetworkId);
 
-                UnitOfWork.NeighborActivityRepository.Update(existingActivity);
-                res.SaveDb = true;
+                  UnitOfWork.NeighborActivityRepository.Update(existingActivity);
+                  res.SaveDb = true;
+                }
+                else
+                {
+                  log.Warn("Activity ID {0}, owner identity ID '{1}' has changed type does exists with primary proximity server ID '{2}'.", activityId, ownerIdentityId.ToHex(), Neighbor.NetworkId.ToHex());
+                  res.ErrorResponse = MessageBuilder.CreateErrorInvalidValueResponse(RequestMessage, UpdateItemIndex + ".change.signedActivity.activity.type");
+                  res.Error = true;
+                }
               }
               else
               {

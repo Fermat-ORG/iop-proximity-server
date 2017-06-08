@@ -156,6 +156,7 @@ namespace ProximityServer.Data.Repositories
     /// <returns>Status.Ok if the function succeeds, 
     /// Status.ErrorNotFound if the activity to update does not exist,
     /// Status.ErrorRejected if the update was rejected and the client should migrate the activity to closest proximity server,
+    /// Status.ErrorInvalidValue if the update attempted to change activity's type,
     /// Status.ErrorInternal otherwise.</returns>
     public async Task<Status> UpdateAndPropagateAsync(UpdateActivityRequest UpdateRequest, byte[] Signature, byte[] OwnerIdentityId, StrongBox<byte[]> CloserServerId)
     {
@@ -207,30 +208,38 @@ namespace ProximityServer.Data.Repositories
                   Signature = ProtocolHelper.ByteArrayToByteString(Signature)
                 };
 
-                bool propagateChange = false;
-                if (!UpdateRequest.NoPropagation)
+                PrimaryActivity updatedActivity = ActivityBase.FromSignedActivityInformation<PrimaryActivity>(signedActivityInformation);
+                ActivityChange changes = existingActivity.CompareChangeTo(updatedActivity);
+
+                if ((changes & ActivityChange.Type) == 0)
                 {
-                  PrimaryActivity updatedActivity = ActivityBase.FromSignedActivityInformation<PrimaryActivity>(signedActivityInformation);
-                  ActivityChange changes = existingActivity.CompareChangeTo(updatedActivity);
-                  
-                  // If only changes in the activity are related to location or expiration time, the activity update is not propagated to the neighborhood.
-                  propagateChange = (changes & ~(ActivityChange.LocationLatitude | ActivityChange.LocationLongitude | ActivityChange.PrecisionRadius | ActivityChange.ExpirationTime)) != 0;
+                  bool propagateChange = false;
+                  if (!UpdateRequest.NoPropagation)
+                  {
+                    // If only changes in the activity are related to location or expiration time, the activity update is not propagated to the neighborhood.
+                    propagateChange = (changes & ~(ActivityChange.LocationLatitude | ActivityChange.LocationLongitude | ActivityChange.PrecisionRadius | ActivityChange.ExpirationTime)) != 0;
+                  }
+
+                  existingActivity.CopyFromSignedActivityInformation(signedActivityInformation);
+
+                  Update(existingActivity);
+
+                  if (propagateChange)
+                  {
+                    // The activity has to be propagated to all our followers we create database actions that will be processed by dedicated thread.
+                    signalNeighborhoodAction = await unitOfWork.NeighborhoodActionRepository.AddActivityFollowerActionsAsync(NeighborhoodActionType.ChangeActivity, existingActivity.ActivityId, existingActivity.OwnerIdentityId);
+                  }
+                  else log.Trace("Change of activity ID {0}, owner identity ID '{1}' won't be propagated to neighborhood.", existingActivity.ActivityId, existingActivity.OwnerIdentityId.ToHex());
+
+                  await unitOfWork.SaveThrowAsync();
+                  transaction.Commit();
+                  success = true;
                 }
-
-                existingActivity.CopyFromSignedActivityInformation(signedActivityInformation);
-
-                Update(existingActivity);
-
-                if (propagateChange)
+                else
                 {
-                  // The activity has to be propagated to all our followers we create database actions that will be processed by dedicated thread.
-                  signalNeighborhoodAction = await unitOfWork.NeighborhoodActionRepository.AddActivityFollowerActionsAsync(NeighborhoodActionType.ChangeActivity, existingActivity.ActivityId, existingActivity.OwnerIdentityId);
+                  log.Debug("Activity ID {0}, owner identity ID '{1}' attempt to change type.", activityInformation.Id, OwnerIdentityId.ToHex());
+                  res = Status.ErrorInvalidValue;
                 }
-                else log.Trace("Change of activity ID {0}, owner identity ID '{1}' won't be propagated to neighborhood.", existingActivity.ActivityId, existingActivity.OwnerIdentityId.ToHex());
-
-                await unitOfWork.SaveThrowAsync();
-                transaction.Commit();
-                success = true;
               }
               // else this is handled below separately, out of locked section
             }
