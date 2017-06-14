@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 namespace ProximityServer.Data.Repositories
 {
   /// <summary>
-  /// Database key-value repository for profile server settings.
+  /// Database key-value repository for proximity server settings.
   /// </summary>
   public class SettingsRepository : GenericRepository<Setting>
   {
@@ -23,7 +23,7 @@ namespace ProximityServer.Data.Repositories
     }
 
     /// <summary>
-    /// Obtains integer value from profile server settings.
+    /// Obtains integer value from proximity server settings.
     /// </summary>
     /// <param name="Name">Setting name.</param>
     /// <returns>Integer value of the setting or -1 if the setting with corresponding name does not exist or if it is not an integer setting.</returns>
@@ -42,7 +42,7 @@ namespace ProximityServer.Data.Repositories
     }
 
     /// <summary>
-    /// Obtains string value from profile server settings.
+    /// Obtains string value from proximity server settings.
     /// </summary>
     /// <param name="Name">Setting name.</param>
     /// <returns>String value of the setting or null if the setting with corresponding name does not exist.</returns>

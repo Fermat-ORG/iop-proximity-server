@@ -48,7 +48,7 @@ namespace ProximityServer.Migrations
 
                     b.HasIndex("IpAddress", "PrimaryPort");
 
-                    b.ToTable("Follower");
+                    b.ToTable("Followers");
                 });
 
             modelBuilder.Entity("ProximityServer.Data.Models.Neighbor", b =>
@@ -91,7 +91,7 @@ namespace ProximityServer.Migrations
 
                     b.HasIndex("IpAddress", "PrimaryPort");
 
-                    b.ToTable("Neighbor");
+                    b.ToTable("Neighbors");
                 });
 
             modelBuilder.Entity("ProximityServer.Data.Models.NeighborActivity", b =>
@@ -170,7 +170,7 @@ namespace ProximityServer.Migrations
 
                     b.HasIndex("ExpirationTime", "StartTime", "LocationLatitude", "LocationLongitude", "PrecisionRadius", "Type", "OwnerIdentityId");
 
-                    b.ToTable("NeighborActivity");
+                    b.ToTable("NeighborActivities");
                 });
 
             modelBuilder.Entity("ProximityServer.Data.Models.NeighborhoodAction", b =>
@@ -288,7 +288,7 @@ namespace ProximityServer.Migrations
 
                     b.HasIndex("ExpirationTime", "StartTime", "LocationLatitude", "LocationLongitude", "PrecisionRadius", "Type", "OwnerIdentityId");
 
-                    b.ToTable("PrimaryActivity");
+                    b.ToTable("PrimaryActivities");
                 });
 
             modelBuilder.Entity("ProximityServer.Data.Models.Setting", b =>

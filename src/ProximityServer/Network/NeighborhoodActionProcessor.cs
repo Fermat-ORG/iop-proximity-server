@@ -61,6 +61,14 @@ namespace ProximityServer.Network
     private int actionExecutorCounter = 0;
 
 
+    /// <summary>Event that is set when DelayedStartupThread is not running.</summary>
+    private ManualResetEvent delayedStartupThreadFinished = new ManualResetEvent(true);
+
+    /// <summary>Thread that is responsible for delated initialization of this component.</summary>
+    private Thread delayedStartupThread;
+
+
+
     /// <summary>
     /// Initializes the component.
     /// </summary>
@@ -77,18 +85,8 @@ namespace ProximityServer.Network
       bool res = false;
       try
       {
-        Server serverComponent = (Server)Base.ComponentDictionary[Server.ComponentName];
-        List<TcpRoleServer<IncomingClient>> roleServers = serverComponent.GetRoleServers();
-        foreach (TcpRoleServer<IncomingClient> roleServer in roleServers)
-        {
-          if ((roleServer.Roles & (uint)ServerRole.Primary) != 0)
-            primaryPort = (uint)roleServer.EndPoint.Port;
-
-          if ((roleServer.Roles & (uint)ServerRole.Neighbor) != 0)
-            neighborPort = (uint)roleServer.EndPoint.Port;
-        }
-
-        RegisterCronJobs();
+        delayedStartupThread = new Thread(new ThreadStart(DelayedStartupThread));
+        delayedStartupThread.Start();
 
         res = true;
         Initialized = true;
@@ -143,6 +141,69 @@ namespace ProximityServer.Network
 
       log.Info("(-)");
     }
+
+
+    /// <summary>
+    /// Thread that is responsible for late initialization of neighborhood action processor.
+    /// This is needed because in order for the proximity server to run, it must know its location.
+    /// The server component thus waits until the location is received from LOC server, 
+    /// but there is no guarantee LOC server is running when the proximity server starts.
+    /// Neighborhood action processor needs server component to be ready before its own initialization 
+    /// can be completed.
+    /// </summary>
+    private async void DelayedStartupThread()
+    {
+      LogDiagnosticContext.Start();
+
+      log.Info("()");
+
+      delayedStartupThreadFinished.Reset();
+
+      try
+      {
+        log.Trace("Waiting for server component initialization ...");
+        Server serverComponent = (Server)Base.ComponentDictionary[Server.ComponentName];
+        bool serverInit = false;
+        try
+        {
+          serverInit = await serverComponent.DelayedStartupCompletedEvent.Task;
+        }
+        catch
+        {
+          // Catch cancellation exception.
+          log.Trace("Shutdown detected.");
+        }
+
+        if (serverInit)
+        {
+          log.Debug("Server initialization completed.");
+          List<TcpRoleServer<IncomingClient>> roleServers = serverComponent.GetRoleServers();
+          foreach (TcpRoleServer<IncomingClient> roleServer in roleServers)
+          {
+            if ((roleServer.Roles & (uint)ServerRole.Primary) != 0)
+              primaryPort = (uint)roleServer.EndPoint.Port;
+
+            if ((roleServer.Roles & (uint)ServerRole.Neighbor) != 0)
+              neighborPort = (uint)roleServer.EndPoint.Port;
+          }
+
+          RegisterCronJobs();
+        }
+      }
+      catch (Exception e)
+      {
+        log.Error("Exception occurred (and rethrowing): {0}", e.ToString());
+        await Task.Delay(5000);
+        throw e;
+      }
+
+      delayedStartupThreadFinished.Set();
+
+      log.Info("(-)");
+
+      LogDiagnosticContext.Stop();
+    }
+
 
 
     /// <summary>

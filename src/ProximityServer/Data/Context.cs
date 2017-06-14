@@ -17,11 +17,25 @@ namespace ProximityServer.Data
     /// <summary>Default name of the database file.</summary>
     public const string DefaultDatabaseFileName = "ProximityServer.db";
 
-    /// <summary>Access to profile server's settings in the database.</summary>
+    /// <summary>Access to proximity server's settings in the database.</summary>
     public DbSet<Setting> Settings { get; set; }
+
+    /// <summary>Database table with primary activities.</summary>
+    public DbSet<PrimaryActivity> PrimaryActivities { get; set; }
+
+    /// <summary>Database table with activities of neighbors.</summary>
+    public DbSet<NeighborActivity> NeighborActivities { get; set; }
+
+    /// <summary>Neighbor proximity servers.</summary>
+    public DbSet<Neighbor> Neighbors { get; set; }
 
     /// <summary>Planned actions related to the neighborhood.</summary>
     public DbSet<NeighborhoodAction> NeighborhoodActions { get; set; }
+
+    /// <summary>Follower servers.</summary>
+    public DbSet<Follower> Followers { get; set; }
+
+
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {

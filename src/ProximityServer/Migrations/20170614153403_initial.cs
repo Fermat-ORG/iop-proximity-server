@@ -9,7 +9,7 @@ namespace ProximityServer.Migrations
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.CreateTable(
-                name: "Follower",
+                name: "Followers",
                 columns: table => new
                 {
                     DbId = table.Column<int>(nullable: false)
@@ -23,11 +23,11 @@ namespace ProximityServer.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_Follower", x => x.DbId);
+                    table.PrimaryKey("PK_Followers", x => x.DbId);
                 });
 
             migrationBuilder.CreateTable(
-                name: "Neighbor",
+                name: "Neighbors",
                 columns: table => new
                 {
                     DbId = table.Column<int>(nullable: false)
@@ -44,11 +44,11 @@ namespace ProximityServer.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_Neighbor", x => x.DbId);
+                    table.PrimaryKey("PK_Neighbors", x => x.DbId);
                 });
 
             migrationBuilder.CreateTable(
-                name: "NeighborActivity",
+                name: "NeighborActivities",
                 columns: table => new
                 {
                     DbId = table.Column<int>(nullable: false)
@@ -72,7 +72,7 @@ namespace ProximityServer.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_NeighborActivity", x => x.DbId);
+                    table.PrimaryKey("PK_NeighborActivities", x => x.DbId);
                 });
 
             migrationBuilder.CreateTable(
@@ -95,7 +95,7 @@ namespace ProximityServer.Migrations
                 });
 
             migrationBuilder.CreateTable(
-                name: "PrimaryActivity",
+                name: "PrimaryActivities",
                 columns: table => new
                 {
                     DbId = table.Column<int>(nullable: false)
@@ -118,7 +118,7 @@ namespace ProximityServer.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_PrimaryActivity", x => x.DbId);
+                    table.PrimaryKey("PK_PrimaryActivities", x => x.DbId);
                 });
 
             migrationBuilder.CreateTable(
@@ -134,86 +134,86 @@ namespace ProximityServer.Migrations
                 });
 
             migrationBuilder.CreateIndex(
-                name: "IX_Follower_Initialized",
-                table: "Follower",
+                name: "IX_Followers_Initialized",
+                table: "Followers",
                 column: "Initialized");
 
             migrationBuilder.CreateIndex(
-                name: "IX_Follower_LastRefreshTime",
-                table: "Follower",
+                name: "IX_Followers_LastRefreshTime",
+                table: "Followers",
                 column: "LastRefreshTime");
 
             migrationBuilder.CreateIndex(
-                name: "IX_Follower_NetworkId",
-                table: "Follower",
+                name: "IX_Followers_NetworkId",
+                table: "Followers",
                 column: "NetworkId",
                 unique: true);
 
             migrationBuilder.CreateIndex(
-                name: "IX_Follower_IpAddress_PrimaryPort",
-                table: "Follower",
+                name: "IX_Followers_IpAddress_PrimaryPort",
+                table: "Followers",
                 columns: new[] { "IpAddress", "PrimaryPort" });
 
             migrationBuilder.CreateIndex(
-                name: "IX_Neighbor_Initialized",
-                table: "Neighbor",
+                name: "IX_Neighbors_Initialized",
+                table: "Neighbors",
                 column: "Initialized");
 
             migrationBuilder.CreateIndex(
-                name: "IX_Neighbor_LastRefreshTime",
-                table: "Neighbor",
+                name: "IX_Neighbors_LastRefreshTime",
+                table: "Neighbors",
                 column: "LastRefreshTime");
 
             migrationBuilder.CreateIndex(
-                name: "IX_Neighbor_NetworkId",
-                table: "Neighbor",
+                name: "IX_Neighbors_NetworkId",
+                table: "Neighbors",
                 column: "NetworkId",
                 unique: true);
 
             migrationBuilder.CreateIndex(
-                name: "IX_Neighbor_IpAddress_PrimaryPort",
-                table: "Neighbor",
+                name: "IX_Neighbors_IpAddress_PrimaryPort",
+                table: "Neighbors",
                 columns: new[] { "IpAddress", "PrimaryPort" });
 
             migrationBuilder.CreateIndex(
-                name: "IX_NeighborActivity_ExpirationTime",
-                table: "NeighborActivity",
+                name: "IX_NeighborActivities_ExpirationTime",
+                table: "NeighborActivities",
                 column: "ExpirationTime");
 
             migrationBuilder.CreateIndex(
-                name: "IX_NeighborActivity_ExtraData",
-                table: "NeighborActivity",
+                name: "IX_NeighborActivities_ExtraData",
+                table: "NeighborActivities",
                 column: "ExtraData");
 
             migrationBuilder.CreateIndex(
-                name: "IX_NeighborActivity_OwnerIdentityId",
-                table: "NeighborActivity",
+                name: "IX_NeighborActivities_OwnerIdentityId",
+                table: "NeighborActivities",
                 column: "OwnerIdentityId");
 
             migrationBuilder.CreateIndex(
-                name: "IX_NeighborActivity_StartTime",
-                table: "NeighborActivity",
+                name: "IX_NeighborActivities_StartTime",
+                table: "NeighborActivities",
                 column: "StartTime");
 
             migrationBuilder.CreateIndex(
-                name: "IX_NeighborActivity_Type",
-                table: "NeighborActivity",
+                name: "IX_NeighborActivities_Type",
+                table: "NeighborActivities",
                 column: "Type");
 
             migrationBuilder.CreateIndex(
-                name: "IX_NeighborActivity_ActivityId_OwnerIdentityId",
-                table: "NeighborActivity",
+                name: "IX_NeighborActivities_ActivityId_OwnerIdentityId",
+                table: "NeighborActivities",
                 columns: new[] { "ActivityId", "OwnerIdentityId" },
                 unique: true);
 
             migrationBuilder.CreateIndex(
-                name: "IX_NeighborActivity_LocationLatitude_LocationLongitude_PrecisionRadius",
-                table: "NeighborActivity",
+                name: "IX_NeighborActivities_LocationLatitude_LocationLongitude_PrecisionRadius",
+                table: "NeighborActivities",
                 columns: new[] { "LocationLatitude", "LocationLongitude", "PrecisionRadius" });
 
             migrationBuilder.CreateIndex(
-                name: "IX_NeighborActivity_ExpirationTime_StartTime_LocationLatitude_LocationLongitude_PrecisionRadius_Type_OwnerIdentityId",
-                table: "NeighborActivity",
+                name: "IX_NeighborActivities_ExpirationTime_StartTime_LocationLatitude_LocationLongitude_PrecisionRadius_Type_OwnerIdentityId",
+                table: "NeighborActivities",
                 columns: new[] { "ExpirationTime", "StartTime", "LocationLatitude", "LocationLongitude", "PrecisionRadius", "Type", "OwnerIdentityId" });
 
             migrationBuilder.CreateIndex(
@@ -253,63 +253,63 @@ namespace ProximityServer.Migrations
                 columns: new[] { "ServerId", "Type", "TargetActivityId", "TargetActivityOwnerId" });
 
             migrationBuilder.CreateIndex(
-                name: "IX_PrimaryActivity_ExpirationTime",
-                table: "PrimaryActivity",
+                name: "IX_PrimaryActivities_ExpirationTime",
+                table: "PrimaryActivities",
                 column: "ExpirationTime");
 
             migrationBuilder.CreateIndex(
-                name: "IX_PrimaryActivity_ExtraData",
-                table: "PrimaryActivity",
+                name: "IX_PrimaryActivities_ExtraData",
+                table: "PrimaryActivities",
                 column: "ExtraData");
 
             migrationBuilder.CreateIndex(
-                name: "IX_PrimaryActivity_OwnerIdentityId",
-                table: "PrimaryActivity",
+                name: "IX_PrimaryActivities_OwnerIdentityId",
+                table: "PrimaryActivities",
                 column: "OwnerIdentityId");
 
             migrationBuilder.CreateIndex(
-                name: "IX_PrimaryActivity_StartTime",
-                table: "PrimaryActivity",
+                name: "IX_PrimaryActivities_StartTime",
+                table: "PrimaryActivities",
                 column: "StartTime");
 
             migrationBuilder.CreateIndex(
-                name: "IX_PrimaryActivity_Type",
-                table: "PrimaryActivity",
+                name: "IX_PrimaryActivities_Type",
+                table: "PrimaryActivities",
                 column: "Type");
 
             migrationBuilder.CreateIndex(
-                name: "IX_PrimaryActivity_ActivityId_OwnerIdentityId",
-                table: "PrimaryActivity",
+                name: "IX_PrimaryActivities_ActivityId_OwnerIdentityId",
+                table: "PrimaryActivities",
                 columns: new[] { "ActivityId", "OwnerIdentityId" },
                 unique: true);
 
             migrationBuilder.CreateIndex(
-                name: "IX_PrimaryActivity_LocationLatitude_LocationLongitude_PrecisionRadius",
-                table: "PrimaryActivity",
+                name: "IX_PrimaryActivities_LocationLatitude_LocationLongitude_PrecisionRadius",
+                table: "PrimaryActivities",
                 columns: new[] { "LocationLatitude", "LocationLongitude", "PrecisionRadius" });
 
             migrationBuilder.CreateIndex(
-                name: "IX_PrimaryActivity_ExpirationTime_StartTime_LocationLatitude_LocationLongitude_PrecisionRadius_Type_OwnerIdentityId",
-                table: "PrimaryActivity",
+                name: "IX_PrimaryActivities_ExpirationTime_StartTime_LocationLatitude_LocationLongitude_PrecisionRadius_Type_OwnerIdentityId",
+                table: "PrimaryActivities",
                 columns: new[] { "ExpirationTime", "StartTime", "LocationLatitude", "LocationLongitude", "PrecisionRadius", "Type", "OwnerIdentityId" });
         }
 
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(
-                name: "Follower");
+                name: "Followers");
 
             migrationBuilder.DropTable(
-                name: "Neighbor");
+                name: "Neighbors");
 
             migrationBuilder.DropTable(
-                name: "NeighborActivity");
+                name: "NeighborActivities");
 
             migrationBuilder.DropTable(
                 name: "NeighborhoodActions");
 
             migrationBuilder.DropTable(
-                name: "PrimaryActivity");
+                name: "PrimaryActivities");
 
             migrationBuilder.DropTable(
                 name: "Settings");

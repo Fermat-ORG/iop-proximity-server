@@ -56,6 +56,9 @@ namespace ProximityServer.Network
     /// <summary>Thread that is responsible for delated initialization of this component.</summary>
     private Thread delayedStartupThread;
 
+    /// <summary>Event that signals when delayed startup is finished.</summary>
+    public TaskCompletionSource<bool> DelayedStartupCompletedEvent = new TaskCompletionSource<bool>();
+
 
 
     public override bool Init()
@@ -92,6 +95,8 @@ namespace ProximityServer.Network
     public override void Shutdown()
     {
       log.Info("()");
+
+      DelayedStartupCompletedEvent.TrySetCanceled();
 
       base.Shutdown();
 
@@ -173,17 +178,18 @@ namespace ProximityServer.Network
 
         if (locInit)
         {
-          Console.WriteLine("Location initialization completed.");
           log.Debug("LOC location is initialized, we can continue with Network server component initialization.");
           if (base.Init())
           {
             RegisterCronJobs();
+            DelayedStartupCompletedEvent.TrySetResult(true);
           }
           else
           {
             log.Error("Delayed initialization failed, initiating shutdown.");
             Base.ComponentManager.GlobalShutdown.SignalShutdown();
           }
+          Console.WriteLine("Location initialization completed.");
         }
       }
       catch (Exception e)

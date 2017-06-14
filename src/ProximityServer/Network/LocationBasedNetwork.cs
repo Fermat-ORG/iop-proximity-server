@@ -66,8 +66,9 @@ namespace ProximityServer.Network
       {
         if (value != null)
         {
+          GpsLocation oldLocation = location;
           location = value;
-          LocLocationInitializedEvent.SetResult(true);
+          if (oldLocation == null) LocLocationInitializedEvent.TrySetResult(true);
         }
       }
     }
@@ -200,7 +201,7 @@ namespace ProximityServer.Network
           {
             // Announce our primary server interface to LOC.
             GpsLocation serverLocation = new GpsLocation(0, 0);
-            if (await client.RegisterPrimaryServerRoleAsync(Config.Configuration.ServerRoles.GetRolePort((uint)ServerRole.Primary), serverLocation))
+            if (await client.RegisterPrimaryServerRoleAsync(Config.Configuration.ServerRoles.GetRolePort((uint)ServerRole.Primary), Iop.Locnet.ServiceType.Proximity, serverLocation))
             {
               this.Location = serverLocation;
               await SaveLocationToSettings();

@@ -9,7 +9,7 @@ using ProximityServer.Data.Models;
 namespace ProximityServer.Migrations
 {
     [DbContext(typeof(Context))]
-    [Migration("20170522102410_initial")]
+    [Migration("20170614153403_initial")]
     partial class initial
     {
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -49,7 +49,7 @@ namespace ProximityServer.Migrations
 
                     b.HasIndex("IpAddress", "PrimaryPort");
 
-                    b.ToTable("Follower");
+                    b.ToTable("Followers");
                 });
 
             modelBuilder.Entity("ProximityServer.Data.Models.Neighbor", b =>
@@ -92,7 +92,7 @@ namespace ProximityServer.Migrations
 
                     b.HasIndex("IpAddress", "PrimaryPort");
 
-                    b.ToTable("Neighbor");
+                    b.ToTable("Neighbors");
                 });
 
             modelBuilder.Entity("ProximityServer.Data.Models.NeighborActivity", b =>
@@ -171,7 +171,7 @@ namespace ProximityServer.Migrations
 
                     b.HasIndex("ExpirationTime", "StartTime", "LocationLatitude", "LocationLongitude", "PrecisionRadius", "Type", "OwnerIdentityId");
 
-                    b.ToTable("NeighborActivity");
+                    b.ToTable("NeighborActivities");
                 });
 
             modelBuilder.Entity("ProximityServer.Data.Models.NeighborhoodAction", b =>
@@ -289,7 +289,7 @@ namespace ProximityServer.Migrations
 
                     b.HasIndex("ExpirationTime", "StartTime", "LocationLatitude", "LocationLongitude", "PrecisionRadius", "Type", "OwnerIdentityId");
 
-                    b.ToTable("PrimaryActivity");
+                    b.ToTable("PrimaryActivities");
                 });
 
             modelBuilder.Entity("ProximityServer.Data.Models.Setting", b =>
