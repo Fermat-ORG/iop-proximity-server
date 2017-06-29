@@ -9,9 +9,9 @@ using Microsoft.EntityFrameworkCore;
 using IopProtocol;
 using Microsoft.EntityFrameworkCore.Storage;
 using IopCommon;
-using IopServerCore.Data;
+using IopAppCore.Data;
+using IopAppCore.Kernel;
 using System.Runtime.CompilerServices;
-using IopServerCore.Kernel;
 using ProximityServer.Kernel;
 using Iop.Shared;
 

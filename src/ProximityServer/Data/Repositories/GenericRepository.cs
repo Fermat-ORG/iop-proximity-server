@@ -1,4 +1,4 @@
-﻿using IopServerCore.Data;
+﻿using IopAppCore.Data;
 using Microsoft.EntityFrameworkCore;
 using System;
 using System.Collections.Generic;

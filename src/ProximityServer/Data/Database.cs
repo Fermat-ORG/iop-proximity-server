@@ -8,8 +8,8 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore.Storage;
 using IopCommon;
-using IopServerCore.Kernel;
-using IopServerCore.Data;
+using IopAppCore.Data;
+using IopAppCore.Kernel;
 
 namespace ProximityServer.Data
 {

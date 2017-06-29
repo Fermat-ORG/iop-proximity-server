@@ -18,6 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\..\iop-sdk-netcore\src\IopAppCore\IopAppCore.csproj" />
     <ProjectReference Include="..\..\..\iop-sdk-netcore\src\IopCommon\IopCommon.csproj" />
     <ProjectReference Include="..\..\..\iop-sdk-netcore\src\IopCrypto\IopCrypto.csproj" />
     <ProjectReference Include="..\..\..\iop-sdk-netcore\src\IopProtocol\IopProtocol.csproj" />

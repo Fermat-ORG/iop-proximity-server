@@ -9,7 +9,7 @@ using Microsoft.EntityFrameworkCore;
 using IopProtocol;
 using ProximityServer.Network;
 using IopCommon;
-using IopServerCore.Data;
+using IopAppCore.Data;
 
 namespace ProximityServer.Data.Repositories
 {

@@ -5,10 +5,10 @@ using System.Threading;
 using System.Threading.Tasks;
 using IopProtocol;
 using IopCommon;
-using IopServerCore.Kernel;
+using IopAppCore.Kernel;
 using IopServerCore.Network.LOC;
 using ProximityServer.Data;
-using IopServerCore.Data;
+using IopAppCore.Data;
 using ProximityServer.Data.Models;
 using System.Globalization;
 

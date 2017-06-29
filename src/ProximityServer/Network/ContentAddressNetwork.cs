@@ -9,8 +9,8 @@ using ProximityServer.Data;
 using ProximityServer.Data.Models;
 using Iop.Can;
 using IopCommon;
-using IopServerCore.Kernel;
-using IopServerCore.Data;
+using IopAppCore.Data;
+using IopAppCore.Kernel;
 using IopServerCore.Network.CAN;
 using Iop.Proximityserver;
 

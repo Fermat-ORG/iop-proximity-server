@@ -1,6 +1,6 @@
 ﻿using System;
 using IopCommon;
-using IopServerCore.Data;
+using IopAppCore.Data;
 using ProximityServer.Data.Repositories;
 using ProximityServer.Data.Models;
 

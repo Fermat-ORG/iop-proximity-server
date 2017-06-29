@@ -6,7 +6,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore.Storage;
 using IopCommon;
-using IopServerCore.Data;
+using IopAppCore.Data;
 using Iop.Shared;
 
 namespace ProximityServer.Data.Repositories

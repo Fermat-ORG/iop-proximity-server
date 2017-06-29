@@ -1,5 +1,5 @@
 ﻿using IopCommon;
-using IopServerCore.Kernel;
+using IopAppCore.Kernel;
 using System;
 using System.IO;
 using System.Threading;

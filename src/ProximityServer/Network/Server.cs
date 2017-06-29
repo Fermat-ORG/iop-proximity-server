@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using IopCommon;
-using IopServerCore.Kernel;
+using IopAppCore.Kernel;
 using System.Threading;
 using System.Threading.Tasks;
 

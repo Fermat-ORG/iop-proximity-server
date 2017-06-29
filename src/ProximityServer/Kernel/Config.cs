@@ -11,6 +11,7 @@ using ProximityServer.Network;
 using System.Globalization;
 using IopCommon.Multiformats;
 using IopCommon;
+using IopAppCore.Kernel;
 using IopServerCore.Kernel;
 using IopServerCore.Network.CAN;
 using IopProtocol;

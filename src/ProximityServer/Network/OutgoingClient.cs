@@ -15,9 +15,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using IopCommon;
 using IopServerCore.Network;
-using Google.Protobuf;
 using Iop.Shared;
-using IopServerCore.Kernel;
+using IopAppCore.Kernel;
 
 namespace ProximityServer.Network
 {

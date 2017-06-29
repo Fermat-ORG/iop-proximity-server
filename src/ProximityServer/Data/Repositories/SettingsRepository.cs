@@ -1,4 +1,4 @@
-﻿using IopServerCore.Data;
+﻿using IopAppCore.Data;
 using ProximityServer.Data.Models;
 using System;
 using System.Collections.Generic;

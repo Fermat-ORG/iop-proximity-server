@@ -17,7 +17,7 @@ using System.Security.Authentication;
 using ProximityServer.Data;
 using Microsoft.EntityFrameworkCore.Storage;
 using IopCommon;
-using IopServerCore.Data;
+using IopAppCore.Data;
 using IopServerCore.Network;
 
 namespace ProximityServer.Network
